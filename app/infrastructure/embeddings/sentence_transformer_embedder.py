@@ -37,14 +37,29 @@ class SentenceTransformerEmbedder(EmbedderPort):
         if not texts:
             return []
         try:
-            vectors = self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+            vectors = self._model.encode(
+                texts,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
             return [v.tolist() for v in vectors]
         except Exception as exc:
             raise EmbeddingError(f"Document embedding failed: {exc}") from exc
 
     def embed_query(self, text: str) -> list[float]:
         try:
-            vec = self._model.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
+            query = (
+                "Represent this sentence for searching relevant passages: "
+                + text
+            )
+
+            vec = self._model.encode(
+                [query],
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )[0]
+
             return vec.tolist()
         except Exception as exc:
             raise EmbeddingError(f"Query embedding failed: {exc}") from exc
+
