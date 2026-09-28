@@ -23,8 +23,13 @@ class Settings(BaseSettings):
     storage_dir: Path = Field(default=Path("./storage"))
 
     # --- Models --------------------------------------------------------
-    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5")
     llm_model: str = Field(default="qwen3:8b")
+
+    # --- Embeddings ---------------------------------------------------
+    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5")
+    embedding_batch_size: int = Field(default=32)
+
+    
 
     # --- Chunking ------------------------------------------------------
     section_max_tokens: int = Field(default=1200)

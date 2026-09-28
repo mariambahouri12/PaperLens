@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 
+from app.config.settings import settings
 from app.domain.exceptions import EmbeddingError
 from app.domain.repositories.embedder import EmbedderPort
 
@@ -39,7 +40,7 @@ class SentenceTransformerEmbedder(EmbedderPort):
         try:
             vectors = self._model.encode(
                 texts,
-                batch_size=32,
+                bbatch_size=settings.embedding_batch_size,
                 normalize_embeddings=True,
                 show_progress_bar=False,
             )
