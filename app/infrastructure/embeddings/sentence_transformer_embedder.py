@@ -39,6 +39,7 @@ class SentenceTransformerEmbedder(EmbedderPort):
         try:
             vectors = self._model.encode(
                 texts,
+                batch_size=32,
                 normalize_embeddings=True,
                 show_progress_bar=False,
             )
