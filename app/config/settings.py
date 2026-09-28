@@ -1,6 +1,5 @@
 """
 Single source of truth for all configurable parameters.
-
 Nothing in domain/ or application/ should contain a magic number that
 belongs here. Everything is read from environment variables (with
 sensible defaults), so the same code runs locally, in tests, or in a
@@ -57,6 +56,10 @@ class Settings(BaseSettings):
     @property
     def bm25_store_path(self) -> Path:
         return self.storage_dir / "bm25"
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return self.storage_dir / "embedding_checkpoint.json"
 
     def ensure_directories(self) -> None:
         for p in (self.data_dir, self.image_dir, self.storage_dir,
