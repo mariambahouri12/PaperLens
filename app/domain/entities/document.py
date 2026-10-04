@@ -35,10 +35,12 @@ class Document:
     elements: list["DocumentElement"] = field(default_factory=list)
     images: list["ExtractedImage"] = field(default_factory=list)
     tables: list["ExtractedTable"] = field(default_factory=list)
+    equations: list["ExtractedEquation"] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
 # Late imports to avoid cycles at module load
-from app.domain.entities.element import DocumentElement  # noqa: E402
-from app.domain.entities.image import ExtractedImage  # noqa: E402
-from app.domain.entities.table import ExtractedTable  # noqa: E402
+from app.domain.entities.element import DocumentElement  
+from app.domain.entities.image import ExtractedImage  
+from app.domain.entities.table import ExtractedTable  
+from app.domain.entities.equation import ExtractedEquation
