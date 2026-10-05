@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .utils import join_value
+from utils import join_value
 
 
 def cell_to_markdown(value) -> str:

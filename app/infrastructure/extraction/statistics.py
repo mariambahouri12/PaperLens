@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .utils import format_duration, format_size
+from utils import format_duration, format_size
 
 
 def print_statistics(

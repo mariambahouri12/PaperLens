@@ -5,10 +5,9 @@ import time
 from pathlib import Path
 
 from PIL import Image
-
 import api
 
-from .table_parser import html_to_rows
+from table_parser import html_to_rows
 
 
 GEMINI_HINT = (

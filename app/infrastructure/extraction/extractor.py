@@ -5,22 +5,22 @@ import json
 import time
 from pathlib import Path
 
-from .document_builder import (
+from document_builder import (
     build_document,
     count_blocks,
 )
-from .markdown_renderer import (
+from markdown_renderer import (
     document_to_markdown,
 )
-from .runner import (
+from runner import (
     find_content_list,
     run_mineru,
 )
-from .statistics import (
+from statistics import (
     print_statistics,
     print_toc,
 )
-from .table_enricher import (
+from table_enricher import (
     enrich_tables,
 )
 
