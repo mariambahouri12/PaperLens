@@ -5,9 +5,10 @@ import time
 from pathlib import Path
 
 from PIL import Image
-import api
+from . import api
 
-from table_parser import html_to_rows
+from .document_builder import iter_tables
+from .table_parser import html_to_rows
 
 
 GEMINI_HINT = (
@@ -277,18 +278,3 @@ def enrich_tables(
     stats["gemini_time"] = (
         time.perf_counter() - start
     )
-
-
-def iter_tables(section: dict):
-    for block in section.get(
-        "blocks",
-        [],
-    ):
-        if block.get("type") == "table":
-            yield block
-
-    for subsection in section.get(
-        "subsections",
-        [],
-    ):
-        yield from iter_tables(subsection)

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from front_matter import (
+from .front_matter import (
     ABSTRACT_TITLE,
     AUTHORS_TITLE,
     split_abstract,
 )
-from hierarchy import detect_logical_level, has_section_number
-from utils import join_value
+from .hierarchy import detect_logical_level, has_section_number
+from .utils import join_value
 
 
 # ----------------------------------------------------------------------
@@ -93,7 +93,19 @@ def to_block(item: dict, base_dir: Path) -> dict | None:
             "page": page,
         }
 
-    # Any other type (list, chart, aside_text, ...): keep all fields as-is.
+    if kind == "chart":
+        return {
+            "type": "chart",
+            "caption": join_value(item.get("chart_caption")),
+            "footnote": join_value(item.get("chart_footnote")),
+            "image_path": resolve_path(
+                base_dir,
+                item.get("img_path", ""),
+            ),
+            "page": page,
+        }
+
+    # Any other type (list, aside_text, ...): keep all fields as-is.
     block = {
         key: value
         for key, value in item.items()

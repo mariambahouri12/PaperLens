@@ -1,199 +1,286 @@
 """
-Two-stage hierarchical chunking.
+Hybrid chunker working on the domain Document.
 
-Stage 1 — Structure-aware:
-    Sections whose token size is <= SECTION_MAX_TOKENS become a single
-    chunk that preserves the *full* section path.
+For each section (in reading order), consecutive blocks are grouped by
+nature:
 
-Stage 2 — Fixed-size fallback:
-    Sections larger than SECTION_MAX_TOKENS are split into fixed-size
-    windows of CHUNK_SIZE tokens with CHUNK_OVERLAP tokens of overlap.
-    Every resulting sub-chunk keeps the same section path and inherits
-    the section's image/table references (so figures near the top of a
-    section are still retrievable from any of its sub-chunks).
+    text / equation  -> merged together (an equation stays with the text
+                        below it), packed up to max_tokens with overlap
+    list             -> merged, packed item by item
+    table            -> one chunk per table (caption + Markdown grid)
+    image / chart    -> one chunk per caption, file path in metadata
 
-Tables are never split in the middle: a table always ends up in a
-single chunk with its caption, and the chunk text includes a Markdown
-rendering of the table so the LLM sees its structure.
+Blocks of different nature are never merged, and two text runs separated
+by a table or an image stay in separate chunks. Chunks never cross a
+section boundary, so section / subsection metadata is always exact.
 """
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from enum import Enum
 
-from app.config.settings import Settings
-from app.domain.entities.chunk import Chunk, ChunkMetadata
+from app.domain.entities.block import (
+    Block,
+    EquationBlock,
+    ListBlock,
+    TableBlock,
+    TextBlock,
+    VisualBlock,
+)
+from app.domain.entities.chunk import Chunk, ChunkMetadata, ChunkType
 from app.domain.entities.document import Document
-from app.domain.entities.element import DocumentElement, ElementType
 from app.domain.repositories.chunker import ChunkerPort
-from app.domain.value_objects.ids import ChunkId, DocumentId, ImageId, TableId
+from app.domain.value_objects.ids import ChunkId
 from app.domain.value_objects.section_path import SectionPath
+from app.infrastructure.chunking.config import ChunkingConfig
+from app.infrastructure.chunking.drafts import ChunkDraft
+from app.infrastructure.chunking.renderers import render_table, render_visual
+from app.infrastructure.chunking.text_packer import Unit, make_unit, pack_units
 from app.infrastructure.chunking.token_counter import count_tokens
 
 logger = logging.getLogger("paperlens.infrastructure.chunking")
 
 
-class HierarchicalChunker(ChunkerPort):
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
+class Kind(str, Enum):
+    TEXT = "text"  # text + equation
+    LIST = "list"
+    TABLE = "table"
+    VISUAL = "visual"
 
-    # ------------------------------------------------------------------ #
+
+# Kinds whose consecutive blocks can be merged into one chunk.
+MERGEABLE = {Kind.TEXT, Kind.LIST}
+
+
+@dataclass
+class Run:
+    """Consecutive blocks of the same kind within one section."""
+
+    kind: Kind
+    blocks: list[Block] = field(default_factory=list)
+
+
+# ----------------------------------------------------------------------
+# Grouping
+# ----------------------------------------------------------------------
+
+
+def classify(block: Block) -> Kind | None:
+    if isinstance(block, (TextBlock, EquationBlock)):
+        return Kind.TEXT
+
+    if isinstance(block, ListBlock):
+        return Kind.LIST
+
+    if isinstance(block, TableBlock):
+        return Kind.TABLE
+
+    if isinstance(block, VisualBlock):
+        return Kind.VISUAL
+
+    return None
+
+
+def group_runs(blocks: Iterable[Block]) -> list[Run]:
+    runs: list[Run] = []
+
+    for block in blocks:
+        kind = classify(block)
+
+        if kind is None:
+            continue
+
+        if runs and kind in MERGEABLE and runs[-1].kind == kind:
+            runs[-1].blocks.append(block)
+        else:
+            runs.append(Run(kind=kind, blocks=[block]))
+
+    return runs
+
+
+# ----------------------------------------------------------------------
+# Units
+# ----------------------------------------------------------------------
+
+
+def _group_equations_with_text(blocks: list[Block]) -> list[list[Block]]:
+    """
+    Group blocks so that every equation travels with the text below it.
+    Equations at the very end of the run stay with the text above.
+    """
+    groups: list[list[Block]] = []
+    pending: list[Block] = []
+
+    for block in blocks:
+        if isinstance(block, EquationBlock):
+            pending.append(block)
+            continue
+
+        groups.append(pending + [block])
+        pending = []
+
+    if pending:
+        if groups:
+            groups[-1].extend(pending)
+        else:
+            groups.append(pending)
+
+    return groups
+
+
+def _render_text_block(block: Block) -> str:
+    return block.latex if isinstance(block, EquationBlock) else block.text
+
+
+def build_text_units(blocks: list[Block]) -> list[Unit]:
+    units = []
+
+    for group in _group_equations_with_text(blocks):
+        text = "\n\n".join(filter(None, map(_render_text_block, group)))
+
+        if not text:
+            continue
+
+        types = {ChunkType.TEXT}
+
+        if any(isinstance(block, EquationBlock) for block in group):
+            types.add(ChunkType.EQUATION)
+
+        units.append(make_unit(text, (block.page for block in group), types))
+
+    return units
+
+
+def build_list_units(blocks: list[Block]) -> list[Unit]:
+    return [
+        make_unit(item, [block.page], {ChunkType.LIST})
+        for block in blocks
+        for item in block.items
+    ]
+
+
+def _pages(block: Block) -> tuple[int, ...]:
+    return (block.page,) if block.page else ()
+
+
+# ----------------------------------------------------------------------
+# Chunker
+# ----------------------------------------------------------------------
+
+
+class HierarchicalChunker(ChunkerPort):
+    def __init__(self, config: ChunkingConfig | None = None) -> None:
+        self.config = config or ChunkingConfig()
+
     def chunk(self, document: Document) -> list[Chunk]:
-        groups = self._group_by_section(document)
+        """All chunks share the document's `document_id`."""
         chunks: list[Chunk] = []
 
-        for section_path, elements in groups.items():
-            images, tables = self._assets_for(document, section_path, elements)
-            text = self._render_section_text(elements, tables)
-            if not text.strip():
-                continue
+        for section in document.iter_sections():
+            for run in group_runs(section.blocks):
+                for draft in self._drafts_for(run):
+                    chunks.append(
+                        self._build_chunk(
+                            document,
+                            section.path,
+                            draft,
+                            index=len(chunks),
+                        )
+                    )
 
-            tokens = count_tokens(text)
-            if tokens <= self.settings.section_max_tokens:
-                chunks.append(self._make_chunk(
-                    document, section_path, text, elements, images, tables,
-                ))
-            else:
-                for i, (sub_text, sub_elements) in enumerate(self._fixed_size_windows(elements, tables)):
-                    chunks.append(self._make_chunk(
-                        document, section_path, sub_text, sub_elements, images, tables,
-                        suffix=f"s{i}",
-                    ))
+        logger.info(
+            "Chunked %s into %d chunk(s)",
+            document.metadata.document_id,
+            len(chunks),
+        )
 
-        logger.info("Chunked %s into %d chunk(s)", document.metadata.document_id, len(chunks))
         return chunks
 
-    # ------------------------------------------------------------------ #
-    def _group_by_section(self, document: Document) -> dict[SectionPath, list[DocumentElement]]:
-        groups: dict[SectionPath, list[DocumentElement]] = defaultdict(list)
-        for e in document.elements:
-            if e.element_type == ElementType.HEADING:
-                continue
-            groups[e.section_path].append(e)
-        return groups
+    # ------------------------------------------------------------------
 
-    def _render_section_text(
-        self,
-        elements: list[DocumentElement],
-        tables: list,
-    ) -> str:
-        parts: list[str] = []
-        table_by_id = {t.table_id: t for t in tables}
-        for e in sorted(elements, key=lambda x: x.order):
-            if e.element_type == ElementType.TABLE and e.table_id in table_by_id:
-                tbl = table_by_id[e.table_id]
-                block = [f"[Table {e.table_id}]"]
-                if tbl.caption:
-                    block.append(tbl.caption)
-                block.append(tbl.to_markdown())
-                parts.append("\n".join(block))
-            elif e.text:
-                parts.append(e.text)
-        return "\n\n".join(parts).strip()
+    def _drafts_for(self, run: Run) -> list[ChunkDraft]:
+        if run.kind == Kind.TEXT:
+            return pack_units(build_text_units(run.blocks), self.config)
 
-    def _assets_for(
-        self,
+        if run.kind == Kind.LIST:
+            return pack_units(
+                build_list_units(run.blocks),
+                self.config,
+                separator="\n",
+            )
+
+        # Table and visual runs always contain exactly one block.
+        block = run.blocks[0]
+
+        if run.kind == Kind.TABLE:
+            return self._table_drafts(block)
+
+        return self._visual_drafts(block)
+
+    def _table_drafts(self, table: TableBlock) -> list[ChunkDraft]:
+        text = render_table(table)
+
+        if not text:
+            return []
+
+        if count_tokens(text) > self.config.max_tokens:
+            logger.warning(
+                "Table %s exceeds max_tokens and is kept whole",
+                table.table_id,
+            )
+
+        return [
+            ChunkDraft(
+                text=text,
+                types=(ChunkType.TABLE,),
+                pages=_pages(table),
+                image_path=table.image_path,
+                table_id=table.table_id,
+            )
+        ]
+
+    def _visual_drafts(self, visual: VisualBlock) -> list[ChunkDraft]:
+        text = render_visual(visual)
+
+        if not text:
+            logger.debug("Skipping visual without caption (page %s)", visual.page)
+            return []
+
+        return [
+            ChunkDraft(
+                text=text,
+                types=(ChunkType(visual.kind.value),),
+                pages=_pages(visual),
+                image_id=visual.image_id,
+                image_path=visual.image_path,
+            )
+        ]
+
+    @staticmethod
+    def _build_chunk(
         document: Document,
         section_path: SectionPath,
-        elements: list[DocumentElement],
-    ):
-        images = [img for img in document.images if img.section_path == section_path]
-        tables = [tbl for tbl in document.tables if tbl.section_path == section_path]
-        # Also include assets explicitly referenced by elements of this section.
-        referenced_image_ids = {e.image_id for e in elements if e.image_id}
-        referenced_table_ids = {e.table_id for e in elements if e.table_id}
-        for img in document.images:
-            if img.image_id in referenced_image_ids and img not in images:
-                images.append(img)
-        for tbl in document.tables:
-            if tbl.table_id in referenced_table_ids and tbl not in tables:
-                tables.append(tbl)
-        return images, tables
-
-    def _fixed_size_windows(
-        self,
-        elements: list[DocumentElement],
-        tables: list,
-    ) -> list[tuple[str, list[DocumentElement]]]:
-        """Split a large section into windows of CHUNK_SIZE tokens with
-        CHUNK_OVERLAP tokens overlap. Table elements are never split."""
-        windows: list[tuple[str, list[DocumentElement]]] = []
-        current_texts: list[str] = []
-        current_elements: list[DocumentElement] = []
-        current_tokens = 0
-        table_by_id = {t.table_id: t for t in tables}
-
-        def flush() -> None:
-            nonlocal current_texts, current_elements, current_tokens
-            if current_texts:
-                windows.append(("\n\n".join(current_texts), current_elements))
-            # Prepare overlap from the tail of what was just flushed.
-            overlap_texts: list[str] = []
-            overlap_tokens = 0
-            for t in reversed(current_texts):
-                tk = count_tokens(t)
-                if overlap_tokens + tk > self.settings.chunk_overlap:
-                    break
-                overlap_texts.insert(0, t)
-                overlap_tokens += tk
-            current_texts = list(overlap_texts)
-            current_elements = []
-            current_tokens = overlap_tokens
-
-        for e in sorted(elements, key=lambda x: x.order):
-            if e.element_type == ElementType.TABLE and e.table_id in table_by_id:
-                rendered = table_by_id[e.table_id].to_markdown()
-            else:
-                rendered = e.text
-            if not rendered.strip():
-                continue
-            rendered_tokens = count_tokens(rendered)
-            if current_tokens + rendered_tokens > self.settings.chunk_size and current_texts:
-                flush()
-            current_texts.append(rendered)
-            current_elements.append(e)
-            current_tokens += rendered_tokens
-
-        if current_texts:
-            windows.append(("\n\n".join(current_texts), current_elements))
-
-        return windows
-
-    def _make_chunk(
-        self,
-        document: Document,
-        section_path: SectionPath,
-        text: str,
-        elements: list[DocumentElement],
-        images: list,
-        tables: list,
-        suffix: str = "",
+        draft: ChunkDraft,
+        index: int,
     ) -> Chunk:
-        pages = sorted({e.page_number for e in elements if e.page_number})
-        image_ids = [ImageId(img.image_id) for img in images]
-        image_captions = [img.caption for img in images if img.caption]
-        table_ids = [TableId(t.table_id) for t in tables]
-        table_captions = [t.caption for t in tables if t.caption]
+        document_id = document.metadata.document_id
 
-        chunk_id = ChunkId(
-            f"{document.metadata.document_id}_{'_'.join(p[:3] for p in section_path.parts) or 'root'}"
-            f"_{suffix or 'full'}"
-        )
-
-        meta = ChunkMetadata(
-            document_id=DocumentId(document.metadata.document_id),
-            filename=document.metadata.filename,
-            section_path=section_path,
-            page_numbers=pages,
-            image_ids=image_ids,
-            image_captions=image_captions,
-            table_ids=table_ids,
-            table_captions=table_captions,
-        )
         return Chunk(
-            chunk_id=chunk_id,
-            document_id=meta.document_id,
-            text=text,
-            metadata=meta,
-            token_count=count_tokens(text),
+            chunk_id=ChunkId(f"{document_id}_{index:04d}"),
+            document_id=document_id,
+            text=draft.text,
+            token_count=count_tokens(draft.text),
+            metadata=ChunkMetadata(
+                document_id=document_id,
+                filename=document.metadata.filename,
+                chunk_index=index,
+                chunk_types=draft.types,
+                section_path=section_path,
+                page_numbers=draft.pages,
+                image_id=draft.image_id,
+                image_path=draft.image_path,
+                table_id=draft.table_id,
+            ),
         )

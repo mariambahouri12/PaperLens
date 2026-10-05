@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.domain.entities.block import TableBlock
+from app.domain.entities.section import Section
 from app.domain.value_objects.ids import DocumentId
 
 
@@ -15,32 +18,46 @@ class DocumentMetadata:
     file_size_bytes: int
     page_count: int
     title: Optional[str] = None
-    authors: list[str] = field(default_factory=list)
+    # Raw front-matter lines (names, affiliations, emails), as printed.
+    author_lines: list[str] = field(default_factory=list)
     abstract: Optional[str] = None
-    ingested_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    ingested_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
 
 @dataclass
 class Document:
     """
-    A parsed research paper.
+    A parsed research paper: metadata plus its section tree.
 
-    Holds the metadata and the flat, reading-ordered list of elements
-    (paragraphs, headings, figures, tables, captions, ...) produced by
-    the extraction layer. The hierarchical section tree is derived from
-    the elements by the chunker, not stored here.
+    The tree (root -> sections -> subsections -> blocks) preserves the
+    reading order. Chunkers walk it; they never see extraction details.
     """
 
     metadata: DocumentMetadata
-    elements: list["DocumentElement"] = field(default_factory=list)
-    images: list["ExtractedImage"] = field(default_factory=list)
-    tables: list["ExtractedTable"] = field(default_factory=list)
-    equations: list["ExtractedEquation"] = field(default_factory=list)
+    root: Section
     warnings: list[str] = field(default_factory=list)
 
+    def iter_sections(self) -> Iterator[Section]:
+        """All sections in reading order (the untitled root comes first)."""
+        yield from self.root.walk()
 
-# Late imports to avoid cycles at module load
-from app.domain.entities.element import DocumentElement  
-from app.domain.entities.image import ExtractedImage  
-from app.domain.entities.table import ExtractedTable  
-from app.domain.entities.equation import ExtractedEquation
+    def iter_tables(self) -> Iterator[TableBlock]:
+        for section in self.iter_sections():
+            for block in section.blocks:
+                if isinstance(block, TableBlock):
+                    yield block
+
+    def find_section(self, title: str) -> Section | None:
+        return next(
+            (s for s in self.iter_sections() if s.title == title),
+            None,
+        )
+
+    def table_of_contents(self) -> list[tuple[int, str, int | None]]:
+        return [
+            (s.level, s.title, s.page)
+            for s in self.iter_sections()
+            if s.title and s.level > 0
+        ]

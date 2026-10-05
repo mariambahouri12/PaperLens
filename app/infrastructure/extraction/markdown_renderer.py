@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from utils import join_value
-
 
 def cell_to_markdown(value) -> str:
     if value is None:
@@ -120,21 +118,10 @@ def block_to_markdown(
                 "",
             ]
 
-    if block_type == "image":
+    if block_type in ("image", "chart"):
         caption = (
             block.get("caption") or ""
         ).strip()
-
-        return (
-            [f"**{caption}**", ""]
-            if caption
-            else []
-        )
-
-    if block_type == "chart":
-        caption = join_value(
-            block.get("chart_caption")
-        )
 
         return (
             [f"**{caption}**", ""]

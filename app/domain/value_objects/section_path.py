@@ -1,12 +1,12 @@
 """
 A section path is the ordered list of section titles from the root of
-the document down to the element, e.g.:
+the document down to a block, e.g.:
 
-    ["Bayesian Methods", "Results", "Experimental Results"]
+    ["II. BACKGROUND AND RELATED WORK", "A. Federated Learning and FedAvg"]
 
 Kept as a dedicated value object (rather than a bare list) so it can
 be serialized consistently, compared, and printed with a stable
-"Bayesian Methods > Results > Experimental Results" form.
+"II. BACKGROUND > A. Federated Learning" form.
 """
 from __future__ import annotations
 
@@ -25,6 +25,16 @@ class SectionPath:
     @classmethod
     def of(cls, parts: Iterable[str]) -> "SectionPath":
         return cls(tuple(p for p in parts if p))
+
+    @property
+    def section(self) -> str | None:
+        """Top-level section title, if any."""
+        return self.parts[0] if self.parts else None
+
+    @property
+    def subsection(self) -> str | None:
+        """Deepest title below the top-level section, if any."""
+        return self.parts[-1] if len(self.parts) > 1 else None
 
     def child(self, title: str) -> "SectionPath":
         return SectionPath(self.parts + (title,))

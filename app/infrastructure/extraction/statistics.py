@@ -1,97 +1,62 @@
-from __future__ import annotations
-
+import json
+import uuid
+from dataclasses import asdict
 from pathlib import Path
 
-from utils import format_duration, format_size
+from app.domain.value_objects.ids import DocumentId
+from app.infrastructure.chunking.config import ChunkingConfig
+from app.infrastructure.chunking.hierarchical_chunker import HierarchicalChunker
+from app.infrastructure.extraction.document_mapper import DocumentMapper
+
+OUTPUT_DIR = Path("app/infrastructure/extraction/output")
+JSON_PATH = OUTPUT_DIR / "test1.json"
+CHUNKS_PATH = OUTPUT_DIR / "test1_chunks.json"
+
+data = json.loads(JSON_PATH.read_text(encoding="utf-8"))
+
+document = DocumentMapper().to_document(
+    data,
+    DocumentId(uuid.uuid4().hex),
+    Path("test1.pdf"),
+)
+
+chunker = HierarchicalChunker(ChunkingConfig(max_tokens=500, overlap_tokens=80))
+chunks = chunker.chunk(document)
 
 
-def print_statistics(
-    pdf: Path,
-    stats: dict,
-    block_counts: dict,
-    total_time: float,
-) -> None:
-    print("\n" + "=" * 70)
-    print("PROCESSING STATISTICS")
-    print("=" * 70)
+def serialize(chunk) -> dict:
+    m = chunk.metadata
+    return {
+        "chunk_id": chunk.chunk_id,
+        "text": chunk.text,
+        "token_count": chunk.token_count,
+        "metadata": {
+            "document_id": m.document_id,
+            "filename": m.filename,
+            "chunk_index": m.chunk_index,
+            "types": [t.value for t in m.chunk_types],
+            "section": m.section,
+            "subsection": m.subsection,
+            "section_path": m.section_path.as_list(),
+            "pages": list(m.page_numbers),
+            "image_id": m.image_id,
+            "image_path": m.image_path,
+            "table_id": m.table_id,
+        },
+    }
 
+
+CHUNKS_PATH.write_text(
+    json.dumps([serialize(c) for c in chunks], ensure_ascii=False, indent=2),
+    encoding="utf-8",
+)
+
+print(f"{len(chunks)} chunk(s) written to {CHUNKS_PATH}\n")
+
+for chunk in chunks:
+    m = chunk.metadata
     print(
-        f"PDF size            : "
-        f"{format_size(pdf.stat().st_size)}"
+        f"#{m.chunk_index:02d} types={[t.value for t in m.chunk_types]} "
+        f"pages={list(m.page_numbers)} tokens={chunk.token_count} "
+        f"| {m.section} | {m.subsection}"
     )
-
-    print(
-        f"MinerU time         : "
-        f"{format_duration(stats.get('mineru_time', 0))}"
-    )
-
-    print(
-        f"Gemini time         : "
-        f"{format_duration(stats.get('gemini_time', 0))}"
-    )
-
-    print(
-        f"Total time          : "
-        f"{format_duration(total_time)}"
-    )
-
-    print(
-        f"MinerU average CPU  : "
-        f"{stats.get('cpu_average', 0):.2f}%"
-    )
-
-    print(
-        f"MinerU maximum CPU  : "
-        f"{stats.get('cpu_max', 0):.2f}%"
-    )
-
-    print(
-        f"MinerU average RAM  : "
-        f"{format_size(stats.get('ram_average', 0))}"
-    )
-
-    print(
-        f"MinerU maximum RAM  : "
-        f"{format_size(stats.get('ram_max', 0))}"
-    )
-
-    print(
-        f"\nTables              : "
-        f"{stats.get('tables_total', 0)} "
-        f"(Gemini OK: "
-        f"{stats.get('tables_ok', 0)}, "
-        f"cached: "
-        f"{stats.get('tables_cached', 0)}, "
-        f"MinerU fallback: "
-        f"{stats.get('tables_failed', 0)})"
-    )
-
-    print("\nExtracted blocks:")
-
-    for block_type, count in sorted(
-        block_counts.items()
-    ):
-        print(
-            f"  - {block_type:<12}: {count}"
-        )
-
-    print("=" * 70)
-
-
-def print_toc(toc: list) -> None:
-    print("\n" + "=" * 70)
-    print("DETECTED TABLE OF CONTENTS")
-    print("=" * 70)
-
-    for level, title, page in toc:
-        indent = "    " * max(
-            level - 1,
-            0,
-        )
-
-        print(
-            f"{indent}- {title}"
-            f"  [level={level}, page={page}]"
-        )
-
-    print("=" * 70)

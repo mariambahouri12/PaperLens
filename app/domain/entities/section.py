@@ -1,35 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from app.domain.entities.element import DocumentElement
+from app.domain.entities.block import Block
 from app.domain.value_objects.section_path import SectionPath
 
 
 @dataclass
 class Section:
     """
-    A node in the document's section hierarchy.
+    A node of the document's section hierarchy.
 
-    A section owns its title, its direct elements (paragraphs, figures,
-    tables ...) and its children sections. The chunker walks this tree
-    to build retrieval units that preserve the full section path.
+    A section owns its direct blocks and its subsections. `path` is the
+    full path of titles from the root, so every block can be located
+    without storing the path on the block itself.
+    The root section has no title and an empty path.
     """
 
-    title: str
+    title: str | None
+    level: int
+    page: int | None
     path: SectionPath
-    level: int = 1
-    elements: list[DocumentElement] = field(default_factory=list)
-    children: list["Section"] = field(default_factory=list)
+    blocks: list[Block] = field(default_factory=list)
+    subsections: list["Section"] = field(default_factory=list)
 
-    def add_element(self, element: DocumentElement) -> None:
-        self.elements.append(element)
+    def walk(self) -> Iterator["Section"]:
+        """Yield this section then all descendants, in reading order."""
+        yield self
 
-    def add_child(self, child: "Section") -> None:
-        self.children.append(child)
-
-    def iter_elements_depth_first(self):
-        for element in self.elements:
-            yield element
-        for child in self.children:
-            yield from child.iter_elements_depth_first()
+        for subsection in self.subsections:
+            yield from subsection.walk()
