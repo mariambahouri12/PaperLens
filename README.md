@@ -275,6 +275,7 @@ All chunks of one document share the same `document_id`.
 
 ### Chunk metadata
 
+<<<<<<< HEAD
 | Field                    | Description                                                  |
 | ------------------------ | ------------------------------------------------------------ |
 | `document_id`            | Unique per document, shared by all its chunks                |
@@ -284,6 +285,17 @@ All chunks of one document share the same `document_id`.
 | `section_path`           | Full ordered list of titles (section + subsection)           |
 | `page_numbers`           | Pages covered by the chunk                                   |
 | `image_id`, `image_path` | Set for image / chart chunks (and table image if available)  |
+=======
+| Field                    | Description                                                 |
+| ------------------------ | ----------------------------------------------------------- |
+| `document_id`            | Unique per document, shared by all its chunks               |
+| `filename`               | Source PDF name                                             |
+| `chunk_index`            | Position of the chunk in the document                       |
+| `chunk_types`            | `text`, `equation`, `list`, `table`, `image`, `chart`       |
+| `section_path`           | Full ordered list of titles (section + subsection)          |
+| `page_numbers`           | Pages covered by the chunk                                  |
+| `image_id`, `image_path` | Set for image / chart chunks (and table image if available) |
+>>>>>>> f835bae (update add)
 
 `ChunkMetadata.to_flat_dict()` returns scalar-only metadata (lists comma-joined, `None` dropped) for vector stores that reject lists.
 
@@ -305,8 +317,12 @@ All chunks of one document share the same `document_id`.
     ],
     "pages": [3],
     "image_id": "image_1",
+<<<<<<< HEAD
     "image_path": ".../images/41e0c928....jpg",
 
+=======
+    "image_path": ".../images/41e0c928....jpg"
+>>>>>>> f835bae (update add)
   }
 }
 ```
