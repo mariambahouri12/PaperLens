@@ -12,3 +12,4 @@ data/
 images/
 storage/
 test_chunking.py 
+tests/
