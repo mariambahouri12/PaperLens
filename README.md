@@ -281,11 +281,9 @@ All chunks of one document share the same `document_id`.
 | `filename`               | Source PDF name                                              |
 | `chunk_index`            | Position of the chunk in the document                        |
 | `chunk_types`            | `text`, `equation`, `list`, `table`, `image`, `chart`        |
-| `section`, `subsection`  | Derived from the section path (subsection only if it exists) |
-| `section_path`           | Full ordered list of titles                                  |
+| `section_path`           | Full ordered list of titles (section + subsection)           |
 | `page_numbers`           | Pages covered by the chunk                                   |
 | `image_id`, `image_path` | Set for image / chart chunks (and table image if available)  |
-| `table_id`               | Set for table chunks                                         |
 
 `ChunkMetadata.to_flat_dict()` returns scalar-only metadata (lists comma-joined, `None` dropped) for vector stores that reject lists.
 
@@ -301,8 +299,6 @@ All chunks of one document share the same `document_id`.
     "filename": "test1.pdf",
     "chunk_index": 12,
     "types": ["image"],
-    "section": "IV. EXPERIMENTAL RESULTS",
-    "subsection": "B. Model Poisoning Attack Impact",
     "section_path": [
       "IV. EXPERIMENTAL RESULTS",
       "B. Model Poisoning Attack Impact"
@@ -310,7 +306,7 @@ All chunks of one document share the same `document_id`.
     "pages": [3],
     "image_id": "image_1",
     "image_path": ".../images/41e0c928....jpg",
-    "table_id": null
+
   }
 }
 ```
