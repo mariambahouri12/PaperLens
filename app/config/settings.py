@@ -1,3 +1,4 @@
+# config/settings.py
 """
 Single source of truth for all configurable parameters.
 Nothing in domain/ or application/ should contain a magic number that
@@ -14,7 +15,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PAPERLENS_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="PAPERLENS_",
+        env_file=".env",
+        extra="ignore",
+    )
 
     # --- Paths ---------------------------------------------------------
     data_dir: Path = Field(default=Path("./data"))
@@ -24,7 +29,7 @@ class Settings(BaseSettings):
     # --- Models --------------------------------------------------------
     llm_model: str = Field(default="qwen3:8b")
 
-    # --- Embeddings ---------------------------------------------------
+    # --- Embeddings ----------------------------------------------------
     embedding_model: str = Field(default="nomic-ai/nomic-embed-text-v1.5")
     embedding_batch_size: int = Field(default=32, ge=1)
     embedding_dimension: int = Field(default=768, ge=1)
@@ -35,27 +40,41 @@ class Settings(BaseSettings):
     embedding_normalize: bool = Field(default=True)
     embedding_trust_remote_code: bool = Field(default=True)
 
-    
-
     # --- Chunking ------------------------------------------------------
-    section_max_tokens: int = Field(default=1200)
-    chunk_size: int = Field(default=500)
-    chunk_overlap: int = Field(default=80)
+    chunk_size: int = Field(default=500, ge=1)
+    chunk_overlap: int = Field(default=80, ge=0)
 
     # --- Retrieval -----------------------------------------------------
     min_relevance_score: float = Field(default=0.005)
-    max_chunks: int = Field(default=10)
-    max_context_tokens: int = Field(default=6000)
-    rrf_k: int = Field(default=60)
+    max_chunks: int = Field(default=4, ge=1)
+    max_context_tokens: int = Field(default=6000, ge=1)
+    rrf_k: int = Field(default=60, ge=1)
+    retrieval_candidate_multiplier: int = Field(default=3, ge=1)
 
     # --- LLM -----------------------------------------------------------
     temperature: float = Field(default=0.0)
-    num_ctx: int = Field(default=8384)
+    num_ctx: int = Field(default=8384, ge=1)
+    llm_think: bool = Field(default=False)
 
     # --- Observability -------------------------------------------------
     log_level: str = Field(default="INFO")
 
     # --- Derived paths -------------------------------------------------
+    @property
+    def output_dir(self) -> Path:
+        """Final artifacts only: `<stem>_chunking.json`."""
+        return self.data_dir / "output"
+
+    @property
+    def debug_dir(self) -> Path:
+        """Intermediate artifacts: extraction JSON, Gemini cache."""
+        return self.data_dir / "debug"
+
+    @property
+    def mineru_raw_dir(self) -> Path:
+        """Raw MinerU output: content_list.json + images."""
+        return self.data_dir / "mineru_raw"
+
     @property
     def vector_store_path(self) -> Path:
         return self.storage_dir / "vector"
@@ -69,9 +88,17 @@ class Settings(BaseSettings):
         return self.storage_dir / "embedding_checkpoint.json"
 
     def ensure_directories(self) -> None:
-        for p in (self.data_dir, self.image_dir, self.storage_dir,
-                  self.vector_store_path, self.bm25_store_path):
-            p.mkdir(parents=True, exist_ok=True)
+        for path in (
+            self.data_dir,
+            self.image_dir,
+            self.storage_dir,
+            self.output_dir,
+            self.debug_dir,
+            self.mineru_raw_dir,
+            self.vector_store_path,
+            self.bm25_store_path,
+        ):
+            path.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

@@ -1,3 +1,4 @@
+# extraction/table_enricher.py
 from __future__ import annotations
 
 import json
@@ -5,8 +6,8 @@ import time
 from pathlib import Path
 
 from PIL import Image
-from . import api
 
+from . import api
 from .document_builder import iter_tables
 from .table_parser import html_to_rows
 
@@ -55,11 +56,6 @@ def apply_table(
     block["source"] = source
     block["columns"] = cols
     block["rows"] = clean
-
-    block["records"] = [
-        dict(zip(cols, row))
-        for row in clean
-    ]
 
     warning_list = list(
         warnings or []
@@ -111,7 +107,6 @@ def apply_fallback(
         source="mineru_fallback",
         columns=[],
         rows=[],
-        records=[],
         warnings=warnings,
     )
 
@@ -151,8 +146,6 @@ def enrich_tables(
         parents=True,
         exist_ok=True,
     )
-
-    api.EXTRA_HINT = GEMINI_HINT
 
     client = api.get_client()
     models = api.pick_models(client)
@@ -216,6 +209,7 @@ def enrich_tables(
                     client,
                     models,
                     image,
+                    extra_hint=GEMINI_HINT,
                 )
 
                 found = api.parse_json(raw)

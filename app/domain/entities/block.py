@@ -1,3 +1,4 @@
+#domain/entities/block.py
 """
 Content blocks of a parsed document.
 

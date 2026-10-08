@@ -1,4 +1,4 @@
-#extraction/document_mapper.py
+# extraction/document_mapper.py
 """
 Maps the JSON produced by the extraction pipeline to a domain Document.
 
@@ -25,8 +25,6 @@ from app.domain.entities.document import Document, DocumentMetadata
 from app.domain.entities.section import Section
 from app.domain.value_objects.ids import DocumentId, ImageId, TableId
 from app.domain.value_objects.section_path import SectionPath
-
-# Adapt this import to where front_matter.py lives in your project.
 from app.infrastructure.extraction.front_matter import (
     ABSTRACT_TITLE,
     AUTHORS_TITLE,
@@ -45,6 +43,19 @@ def _as_text(value) -> str:
     return str(value or "").strip()
 
 
+def _stable_image_id(image_path: str | None, fallback: int) -> ImageId:
+    """
+    Prefer the content-hash file name (stable across re-ingestions);
+    fall back to a positional id only when no path is available.
+    """
+    if image_path:
+        stem = Path(image_path).stem
+        if stem:
+            return ImageId(stem)
+
+    return ImageId(f"image_{fallback}")
+
+
 @dataclass
 class _Counters:
     """Fallback id generators for assets that have no id in the JSON."""
@@ -57,10 +68,28 @@ class DocumentMapper:
     def to_document(
         self,
         data: dict,
-        document_id: DocumentId,
+        document_id: DocumentId | None = None,
         file_path: Path | None = None,
     ) -> Document:
+        """
+        Map an extraction JSON to a domain Document.
+
+        `document_id` defaults to `data["metadata"]["document_id"]`,
+        which is the canonical source. Passing it explicitly is only
+        needed for backwards compatibility with older JSONs that predate
+        UUIDs.
+        """
         meta = data.get("metadata") or {}
+
+        if document_id is None:
+            stored = meta.get("document_id")
+            if not stored:
+                raise ValueError(
+                    "data has no metadata.document_id and no explicit "
+                    "document_id was passed"
+                )
+            document_id = DocumentId(stored)
+
         root = self._map_section(
             data.get("content") or {},
             SectionPath.empty(),
@@ -165,12 +194,19 @@ class DocumentMapper:
         )
 
     @staticmethod
-    def _map_visual(raw: dict, kind: str, page, counters: _Counters) -> VisualBlock:
+    def _map_visual(
+        raw: dict,
+        kind: str,
+        page,
+        counters: _Counters,
+    ) -> VisualBlock:
+        image_path = raw.get("image_path") or raw.get("img_path") or None
+
         return VisualBlock(
             page=page,
             kind=VisualKind(kind),
-            image_id=ImageId(f"image_{next(counters.images)}"),
-            image_path=raw.get("image_path") or raw.get("img_path") or None,
+            image_id=_stable_image_id(image_path, next(counters.images)),
+            image_path=image_path,
             caption=_as_text(raw.get("caption") or raw.get("chart_caption")),
             footnote=_as_text(raw.get("footnote") or raw.get("chart_footnote")),
         )

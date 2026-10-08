@@ -1,3 +1,4 @@
+#llm/ollma_llm.py
 """
 Local LLM adapter for Ollama.
 
@@ -6,10 +7,16 @@ Requires Ollama running locally and the model pulled, e.g.:
     ollama pull qwen3:8b
 
 All generation parameters come from Settings; nothing is hard-coded.
+
+Qwen3 is a reasoning model. For RAG the reasoning is switched off by
+default (`llm_think=False`): answers are faster, cheaper in context tokens
+and the answer never gets cut by `num_ctx` in the middle of the reasoning.
+Any <think>...</think> block that still reaches the answer is removed.
 """
 from __future__ import annotations
 
 import logging
+import re
 
 import ollama
 
@@ -18,6 +25,12 @@ from app.domain.exceptions import LLMError
 from app.domain.repositories.llm import LLMPort
 
 logger = logging.getLogger("paperlens.infrastructure.llm")
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _strip_thinking(text: str) -> str:
+    return _THINK_BLOCK.sub("", text or "").strip()
 
 
 class OllamaLLM(LLMPort):
@@ -37,10 +50,23 @@ class OllamaLLM(LLMPort):
                     "temperature": self.settings.temperature,
                     "num_ctx": self.settings.num_ctx,
                 },
+                think=self.settings.llm_think,
             )
         except Exception as exc:
             raise LLMError(f"Ollama call failed: {exc}") from exc
 
+        answer = _strip_thinking(self._content(response))
+
+        if not answer:
+            raise LLMError(
+                "Ollama returned an empty answer (reasoning not finished? "
+                "check num_ctx and llm_think)"
+            )
+
+        return answer
+
+    @staticmethod
+    def _content(response) -> str:
         try:
             return response["message"]["content"]
         except Exception:

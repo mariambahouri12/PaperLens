@@ -1,10 +1,6 @@
 """
 Sentence splitting that never breaks inside math, LaTeX or abbreviations.
-
-Protected spans (inline / display math, LaTeX environments, and common
-abbreviations such as "et al." or "Fig.") are replaced by placeholders
-before splitting, then restored. A sentence boundary can therefore never
-fall inside them.
+...
 """
 from __future__ import annotations
 
@@ -12,19 +8,17 @@ import re
 
 _PROTECTED = re.compile(
     r"""
-    \$\$.+?\$\$                                            # $$ display $$
-  | \$[^$\n]+?\$                                           # $ inline $
-  | \\\(.+?\\\)                                            # \( inline \)
-  | \\\[.+?\\\]                                            # \[ display \]
-  | \\begin\{(?P<env>[a-zA-Z*]+)\}.+?\\end\{(?P=env)\}     # LaTeX environments
+    \$\$.+?\$\$
+  | \$[^$\n]+?\$
+  | \\\(.+?\\\)
+  | \\\[.+?\\\]
+  | \\begin\{(?P<env>[a-zA-Z*]+)\}.+?\\end\{(?P=env)\}
   | \b(?i:et\ al|e\.g|i\.e|etc|vs|cf|figs?|eqs?|tabs?|secs?|refs?|approx|resp)\.
     """,
     re.VERBOSE | re.DOTALL,
 )
 
 _PLACEHOLDER = re.compile(r"\x00(\d+)\x00")
-
-# Whitespace after . ! ? followed by something that looks like a sentence start.
 _BOUNDARY = re.compile(r'(?<=[.!?])\s+(?=[A-Z0-9"“(\[\\\x00])')
 
 

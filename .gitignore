@@ -3,3 +3,12 @@ __pycache__/
 *.pyc
 output/
 test1.pdf
+storage/
+scripts/
+tests/
+data/
+.env
+.env.example
+images/
+storage/
+test_chunking.py 

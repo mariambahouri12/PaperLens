@@ -1,6 +1,7 @@
+# domain/entities/chunk.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from app.domain.value_objects.ids import ChunkId, DocumentId, ImageId, TableId
@@ -25,7 +26,7 @@ class ChunkMetadata:
 
     All chunks of one document share the same `document_id`.
     A text chunk holding equations has types (TEXT, EQUATION).
-    Images and tables are referenced (path / id), never embedded.
+    Images and tables are referenced by path / id, never embedded.
     """
 
     document_id: DocumentId
@@ -37,7 +38,6 @@ class ChunkMetadata:
     image_id: ImageId | None = None
     image_path: str | None = None
     table_id: TableId | None = None
-    extra: dict = field(default_factory=dict)
 
     @property
     def section(self) -> str | None:

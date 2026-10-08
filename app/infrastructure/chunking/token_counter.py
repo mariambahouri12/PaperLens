@@ -1,9 +1,6 @@
 """
 Token counting and token-based splitting helpers.
-
-Uses tiktoken when available (cl100k_base, a reasonable proxy for any
-modern LLM tokenizer); falls back to a character-based estimate
-(~4 chars/token) otherwise. Never raises.
+...
 """
 from __future__ import annotations
 

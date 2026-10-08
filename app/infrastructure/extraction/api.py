@@ -1,3 +1,4 @@
+# extraction/api.py
 """
 GENERIC table extraction from images using the Gemini API (free tier).
 No column name is imposed: the model reads the headers by itself.
@@ -26,9 +27,6 @@ API_KEY = ""
 
 # Explicit list of models to try. If empty, models are discovered automatically.
 MODELS = []
-
-# Extra instruction appended to the prompt (set at runtime by the caller).
-EXTRA_HINT = ""
 
 MAX_ATTEMPTS = 8           # maximum number of Gemini calls per image
 PAUSE_BETWEEN_IMAGES = 5   # seconds to wait between two images
@@ -102,15 +100,20 @@ def pick_models(client):
     return names[:4]
 
 
-def call_gemini(client, models, img):
-    """Call Gemini with retries and model fallback."""
+def call_gemini(client, models, img, extra_hint: str = ""):
+    """
+    Call Gemini with retries and model fallback.
+
+    `extra_hint` is appended to the base prompt for this call only; there
+    is no module-level mutable state.
+    """
     cfg = types.GenerateContentConfig(
         response_mime_type="application/json",
         temperature=0,
     )
 
     prompt = PROMPT + (
-        f"\nAdditional hint: {EXTRA_HINT}\n" if EXTRA_HINT else ""
+        f"\nAdditional hint: {extra_hint}\n" if extra_hint else ""
     )
 
     dead = set()  # models rejected by the API (404)
@@ -133,7 +136,7 @@ def call_gemini(client, models, img):
             print(f"  OK with {model}")
             return response.text
 
-        except errors.ServerError as error:  # 500/503: server overloaded
+        except errors.ServerError as error:  # 500/503: server overloaded            
             print(
                 f"  {model} unavailable ({error.code}). "
                 f"Retrying in {wait}s..."
@@ -206,12 +209,12 @@ def table_to_df(table):
     return pd.DataFrame(fixed, columns=cols), problems
 
 
-def process_image(client, models, path):
+def process_image(client, models, path, extra_hint: str = ""):
     """Extract the tables of one image and save them as JSON and CSV."""
     print(f"\n=== {path.name} ===")
 
     img = Image.open(path).convert("RGB")
-    raw = call_gemini(client, models, img)
+    raw = call_gemini(client, models, img, extra_hint)
 
     # Keep the raw response in case the JSON is invalid.
     raw_file = path.with_suffix(".raw.txt")

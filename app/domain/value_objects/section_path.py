@@ -1,3 +1,4 @@
+#domain/value_objects/section_path.py
 """
 A section path is the ordered list of section titles from the root of
 the document down to a block, e.g.:

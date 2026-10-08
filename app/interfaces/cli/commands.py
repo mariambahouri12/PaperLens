@@ -1,196 +1,358 @@
+# interfaces/cli/commands.py
 """
-CLI interface for PaperLens.
+Composition root + CLI for PaperLens.
 
-Commands:
-  ingest           – build indices from data/*.pdf
-  ask <question>   – answer a question (optionally with images)
-  show-image <id>  – open an image from the store
+This is the ONLY module that knows about every concrete adapter. The
+CLI commands build the use cases with the right dependencies and call
+them; nothing in `domain/` or `application/` imports a specific
+library (qdrant-client, rank_bm25, sentence-transformers, ollama, ...).
+
+Commands
+--------
+    paperlens ingest [--data-dir PATH] [--force]
+    paperlens ask "question" [--top-k N] [--no-images]
+    paperlens images "query" [--top-k N]
+    paperlens stats
+    paperlens --version
 """
 from __future__ import annotations
 
-import json
 import logging
-import subprocess
-import sys
+from pathlib import Path
+from typing import Annotated, Optional
 
 import typer
-from rich.console import Console
 
 from app.application.use_cases.answer_query import AnswerQueryUseCase
 from app.application.use_cases.ingest_documents import IngestDocumentsUseCase
 from app.application.use_cases.retrieve_images import RetrieveImagesUseCase
-from app.config.settings import settings
+from app.config.settings import Settings, settings as default_settings
 from app.domain.entities.query import Query, QueryIntent
 from app.infrastructure.bm25.rank_bm25_index import RankBM25Index
 from app.infrastructure.checkpoint.json_checkpoint import JsonCheckpointRepository
+from app.infrastructure.chunking.config import ChunkingConfig
 from app.infrastructure.chunking.hierarchical_chunker import HierarchicalChunker
 from app.infrastructure.embeddings.sentence_transformer_embedder import (
     SentenceTransformerEmbedder,
 )
-from app.infrastructure.extraction.pymupdf_extractor import PyMuPDFExtractor
-from app.infrastructure.image_store.filesystem_image_store import FilesystemImageStore
+from app.infrastructure.extraction.extractor import MinerUExtractor
+from app.infrastructure.image_store.filesystem_image_resolver import (
+    FilesystemImageResolver,
+)
 from app.infrastructure.llm.ollama_llm import OllamaLLM
 from app.infrastructure.logging.structured_logger import configure_logging
 from app.infrastructure.vector_store.qdrant_local_store import QdrantLocalStore
 
 logger = logging.getLogger("paperlens.interfaces.cli")
-console = Console()
-app = typer.Typer(help="PaperLens — multimodal RAG for research papers.")
+
+app = typer.Typer(
+    name="paperlens",
+    help="PaperLens: ask questions about your research papers.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+
+# ----------------------------------------------------------------------
+# Version
+# ----------------------------------------------------------------------
+
+__version__ = "0.1.0"
 
 
-def _wire():
-    configure_logging(settings.log_level)
-    settings.ensure_directories()
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"PaperLens {__version__}")
+        raise typer.Exit()
 
-    embedder = SentenceTransformerEmbedder(settings.embedding_model)
 
-    vector_store = QdrantLocalStore(
-        settings.vector_store_path,
-        dimension=embedder.dimension,
+@app.callback()
+def main(
+    version: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--version",
+            "-V",
+            help="Show the version and exit.",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = None,
+    log_level: Annotated[
+        str,
+        typer.Option(
+            "--log-level",
+            "-l",
+            help="Logging level (DEBUG, INFO, WARNING, ERROR).",
+            envvar="PAPERLENS_LOG_LEVEL",
+        ),
+    ] = "",
+) -> None:
+    """
+    PaperLens command-line interface.
+
+    Configure logging once for the whole process; individual commands
+    do not touch logging.
+    """
+    level = log_level or default_settings.log_level
+    configure_logging(level=level)
+
+
+# ----------------------------------------------------------------------
+# Dependency factory
+# ----------------------------------------------------------------------
+
+
+def _build_settings() -> Settings:
+    """
+    Return the singleton settings, after ensuring its directories exist.
+
+    Keeping this in one place means commands never touch the filesystem
+    themselves.
+    """
+    default_settings.ensure_directories()
+    return default_settings
+
+
+def _build_chunker(settings: Settings) -> HierarchicalChunker:
+    return HierarchicalChunker(
+        ChunkingConfig.from_settings(settings),
     )
 
-    bm25 = RankBM25Index(settings.bm25_store_path)
-    bm25.load()
 
-    checkpoint = JsonCheckpointRepository(
-        settings.checkpoint_path
-    )
-
-    image_store = FilesystemImageStore(settings)
-    llm = OllamaLLM(settings)
-
-    chunker = HierarchicalChunker(settings)
-    extractor = PyMuPDFExtractor()
-
-    ingest_uc = IngestDocumentsUseCase(
-        settings=settings,
-        extractors=[extractor],
-        image_store=image_store,
-        chunker=chunker,
-        embedder=embedder,
-        vector_store=vector_store,
-        bm25_index=bm25,
-        checkpoint=checkpoint,
-    )
-
-    answer_uc = AnswerQueryUseCase(
-        settings=settings,
-        embedder=embedder,
-        vector_store=vector_store,
-        bm25_index=bm25,
-        image_store=image_store,
-        llm=llm,
-    )
-
-    return ingest_uc, answer_uc, bm25, image_store
+def _build_embedder(settings: Settings) -> SentenceTransformerEmbedder:
+    # Model name is read from settings inside the adapter.
+    return SentenceTransformerEmbedder()
 
 
-# ---------------------------------------------------------------------- #
+def _build_bm25(settings: Settings) -> RankBM25Index:
+    index = RankBM25Index(persist_path=settings.bm25_store_path)
+    index.load()
+    return index
+
+
+def _build_checkpoint(settings: Settings) -> JsonCheckpointRepository:
+    return JsonCheckpointRepository(settings.checkpoint_path)
+
+
+# ----------------------------------------------------------------------
+# Commands
+# ----------------------------------------------------------------------
+
+
 @app.command()
-def ingest() -> None:
-    """Ingest every PDF under data/ and build the indices."""
-    ingest_uc, _, bm25, _ = _wire()
+def ingest(
+    data_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--data-dir",
+            "-d",
+            help="Directory containing the PDFs to ingest (default: PAPERLENS_DATA_DIR).",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            "-f",
+            help="Ignore the checkpoint and re-index every chunk.",
+        ),
+    ] = False,
+) -> None:
+    """
+    Extract, chunk, embed and index every PDF found in the data directory.
+    """
+    settings = _build_settings()
 
-    stats = ingest_uc.run()
+    if data_dir is not None:
+        settings.data_dir = data_dir
 
-    bm25.persist()
+    checkpoint = _build_checkpoint(settings)
 
-    console.print_json(json.dumps(stats))
+    if force:
+        # Resetting the checkpoint forces re-embedding of every chunk,
+        # but does NOT delete the vector store or the BM25 index: upserts
+        # are idempotent and the BM25 `add` skips existing ids.
+        logger.info("--force set: resetting the checkpoint")
+        checkpoint = JsonCheckpointRepository(settings.checkpoint_path)
+        checkpoint._completed.clear()  # type: ignore[attr-defined]
+        checkpoint._write()  # type: ignore[attr-defined]
+
+    # The vector store holds an OS-level lock; use it as a context
+    # manager so the lock is released even if ingestion crashes.
+    with QdrantLocalStore(
+        path=settings.vector_store_path,
+        dimension=settings.embedding_dimension,
+    ) as vector_store:
+        use_case = IngestDocumentsUseCase(
+            settings=settings,
+            extractors=[MinerUExtractor(settings=settings)],
+            chunker=_build_chunker(settings),
+            embedder=_build_embedder(settings),
+            vector_store=vector_store,
+            bm25_index=_build_bm25(settings),
+            checkpoint=checkpoint,
+        )
+
+        stats = use_case.run()
+
+    _print_ingest_stats(stats)
 
 
 @app.command()
 def ask(
-    question: str = typer.Argument(...),
-    with_images: bool = typer.Option(
-        False,
-        "--with-images",
-        help="Attach referenced images.",
-    ),
-    image_only: bool = typer.Option(
-        False,
-        "--image-only",
-        help="Return images only.",
-    ),
+    question: Annotated[
+        str,
+        typer.Argument(help="The question to ask."),
+    ],
+    top_k: Annotated[
+        Optional[int],
+        typer.Option(
+            "--top-k",
+            "-k",
+            help="Number of chunks to keep after fusion (default: MAX_CHUNKS).",
+            min=1,
+        ),
+    ] = None,
+    no_images: Annotated[
+        bool,
+        typer.Option(
+            "--no-images",
+            help="Never attach images, even if the query mentions a figure.",
+        ),
+    ] = False,
 ) -> None:
-    """Ask a question about the ingested papers."""
-    _, answer_uc, _, image_store = _wire()
+    """
+    Ask a question. Retrieves context, attaches referenced images and
+    calls the local LLM.
+    """
+    settings = _build_settings()
 
-    if image_only:
-        retrieve_images = RetrieveImagesUseCase(answer_uc)
-        images = retrieve_images.run(question)
+    intent = QueryIntent.TEXT_ONLY if no_images else QueryIntent.TEXT_AND_IMAGE
+    query = Query(text=question, intent=intent, top_k=top_k)
 
-        for img in images:
-            console.print(
-                f"[bold]{img.image_id}[/bold]  "
-                f"{img.caption}  -> "
-                f"{image_store.resolve_path(img)}"
-            )
-
-        return
-
-    intent = (
-        QueryIntent.TEXT_AND_IMAGE
-        if with_images
-        else QueryIntent.TEXT_ONLY
-    )
-
-    answer = answer_uc.run(
-        Query(
-            text=question,
-            intent=intent,
+    with QdrantLocalStore(
+        path=settings.vector_store_path,
+        dimension=settings.embedding_dimension,
+    ) as vector_store:
+        use_case = AnswerQueryUseCase(
+            settings=settings,
+            embedder=_build_embedder(settings),
+            vector_store=vector_store,
+            bm25_index=_build_bm25(settings),
+            image_resolver=FilesystemImageResolver(
+                allowed_roots=[settings.data_dir, settings.image_dir],
+            ),
+            llm=OllamaLLM(settings),
         )
-    )
 
-    console.print("\n[bold green]Answer:[/bold green]\n")
-    console.print(answer.text)
+        answer = use_case.run(query)
+
+    _print_answer(answer)
+
+
+@app.command()
+def images(
+    query_text: Annotated[
+        str,
+        typer.Argument(help="The query describing the figure you want."),
+    ],
+    top_k: Annotated[
+        Optional[int],
+        typer.Option("--top-k", "-k", min=1),
+    ] = None,
+) -> None:
+    """
+    Return only the images referenced by the top chunks (no LLM call).
+    """
+    settings = _build_settings()
+
+    with QdrantLocalStore(
+        path=settings.vector_store_path,
+        dimension=settings.embedding_dimension,
+    ) as vector_store:
+        use_case = RetrieveImagesUseCase(
+            settings=settings,
+            embedder=_build_embedder(settings),
+            vector_store=vector_store,
+            bm25_index=_build_bm25(settings),
+            image_resolver=FilesystemImageResolver(
+                allowed_roots=[settings.data_dir, settings.image_dir],
+            ),
+        )
+
+        found = use_case.run(query_text, top_k=top_k)
+
+    _print_images(found)
+
+
+@app.command()
+def stats() -> None:
+    """
+    Print the size of the vector store, BM25 index and checkpoint.
+    """
+    settings = _build_settings()
+
+    with QdrantLocalStore(
+        path=settings.vector_store_path,
+        dimension=settings.embedding_dimension,
+    ) as vector_store:
+        vector_count = vector_store.count()
+
+    bm25 = _build_bm25(settings)
+    bm25_count = bm25.count()
+
+    checkpoint = _build_checkpoint(settings)
+    checkpoint_count = len(getattr(checkpoint, "_completed", set()))
+
+    typer.echo("PaperLens storage")
+    typer.echo(f"  vector store : {vector_count} chunk(s)")
+    typer.echo(f"  BM25 index   : {bm25_count} chunk(s)")
+    typer.echo(f"  checkpoint   : {checkpoint_count} chunk(s)")
+    typer.echo(f"  data dir     : {settings.data_dir}")
+    typer.echo(f"  storage dir  : {settings.storage_dir}")
+
+
+# ----------------------------------------------------------------------
+# Pretty printing
+# ----------------------------------------------------------------------
+
+
+def _print_ingest_stats(stats: dict) -> None:
+    typer.echo("")
+    typer.echo("Ingestion summary")
+    typer.echo(f"  discovered : {stats.get('discovered', 0)}")
+    typer.echo(f"  ingested   : {stats.get('ingested', 0)}")
+    typer.echo(f"  failed     : {stats.get('failed', 0)}")
+    typer.echo(f"  chunks     : {stats.get('chunks', 0)}")
+
+
+def _print_answer(answer) -> None:
+    typer.echo("")
+    typer.echo("=" * 70)
+    typer.echo("ANSWER")
+    typer.echo("=" * 70)
+    typer.echo(answer.text)
 
     if answer.used_images:
-        console.print("\n[bold]Referenced images:[/bold]")
-
-        for img in answer.used_images:
-            console.print(
-                f"  - {img.image_id}: "
-                f"{img.caption or '(no caption)'}"
-            )
-            console.print(
-                f"    {image_store.resolve_path(img)}"
-            )
+        typer.echo("")
+        typer.echo("Attached images")
+        for image in answer.used_images:
+            caption = (image.caption or "").splitlines()[0][:80]
+            typer.echo(f"  - {image.image_id} (p. {image.page_number})")
+            typer.echo(f"    {image.image_path}")
+            if caption:
+                typer.echo(f"    {caption}")
 
 
-@app.command("show-image")
-def show_image(image_id: str) -> None:
-    """Open an image from the store using the OS default viewer."""
-    from app.domain.entities.image import ExtractedImage
-    from app.domain.value_objects.ids import DocumentId, ImageId
-    from app.domain.value_objects.section_path import SectionPath
-
-    _, _, _, image_store = _wire()
-
-    placeholder = ExtractedImage(
-        image_id=ImageId(image_id),
-        document_id=DocumentId(""),
-        page_number=0,
-        section_path=SectionPath.empty(),
-        image_path="",
-    )
-
-    path = image_store.resolve_path(placeholder)
-
-    if not path or not sys.platform:
-        console.print(
-            f"[red]Image {image_id} not found.[/red]"
-        )
+def _print_images(images: list) -> None:
+    if not images:
+        typer.echo("No image found.")
         return
 
-    console.print(f"Opening {path}")
-
-    if sys.platform.startswith("win"):
-        subprocess.Popen(
-            ["start", "", path],
-            shell=True,
-        )
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", path])
-    else:
-        subprocess.Popen(["xdg-open", path])
-
+    typer.echo(f"{len(images)} image(s):")
+    for image in images:
+        typer.echo(f"  - {image.image_id} (p. {image.page_number})")
+        typer.echo(f"    {image.image_path}")
