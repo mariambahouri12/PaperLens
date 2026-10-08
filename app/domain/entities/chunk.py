@@ -47,27 +47,6 @@ class ChunkMetadata:
     def subsection(self) -> str | None:
         return self.section_path.subsection
 
-    def to_flat_dict(self) -> dict:
-        """
-        Scalar-only metadata for vector stores that reject lists
-        (e.g. Chroma). Lists are comma-joined, None values are dropped.
-        """
-        flat = {
-            "document_id": self.document_id,
-            "filename": self.filename,
-            "chunk_index": self.chunk_index,
-            "types": ",".join(t.value for t in self.chunk_types),
-            "section": self.section,
-            "subsection": self.subsection,
-            "section_path": str(self.section_path),
-            "pages": ",".join(str(p) for p in self.page_numbers),
-            "image_id": self.image_id,
-            "image_path": self.image_path,
-            "table_id": self.table_id,
-        }
-
-        return {key: value for key, value in flat.items() if value is not None}
-
 
 @dataclass(frozen=True)
 class Chunk:

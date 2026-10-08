@@ -1,14 +1,28 @@
-#extraction/runner.py
+# extraction/runner.py
+"""
+MinerU subprocess runner and output finder.
+
+Responsibilities (and ONLY these):
+  - locate the `mineru` executable,
+  - run it with the right arguments,
+  - monitor CPU / RAM while it runs,
+  - collect statistics,
+  - raise `MinerUError` on failure.
+
+The runner NEVER calls `sys.exit()`: callers receive an exception and
+decide what to do (skip document, fall back, abort, ...).
+"""
 from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 
 import psutil
+
+from app.domain.exceptions import MinerUError
 
 
 def monitor_process(
@@ -16,6 +30,10 @@ def monitor_process(
     stats: dict,
     stop_event: threading.Event,
 ) -> None:
+    """
+    Sample CPU and RAM usage of the MinerU process (and its children)
+    until `stop_event` is set, then store averages and maxima in `stats`.
+    """
     cpu_values: list[float] = []
     ram_values: list[int] = []
 
@@ -30,7 +48,6 @@ def monitor_process(
     while not stop_event.is_set():
         try:
             processes = [parent]
-
             try:
                 processes.extend(parent.children(recursive=True))
             except psutil.NoSuchProcess:
@@ -43,19 +60,13 @@ def monitor_process(
                 try:
                     cpu += proc.cpu_percent(interval=None)
                     ram += proc.memory_info().rss
-                except (
-                    psutil.NoSuchProcess,
-                    psutil.AccessDenied,
-                ):
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
             cpu_values.append(cpu)
             ram_values.append(ram)
 
-        except (
-            psutil.NoSuchProcess,
-            psutil.AccessDenied,
-        ):
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
         stop_event.wait(0.5)
@@ -76,10 +87,19 @@ def run_mineru(
     stats: dict,
     skip_tables: bool,
 ) -> None:
+    """
+    Run MinerU on `pdf`, writing its raw output to `raw_dir`.
+
+    Raises
+    ------
+    MinerUError
+        If the `mineru` executable is missing or MinerU exits with a
+        non-zero return code.
+    """
     executable = shutil.which("mineru")
 
     if executable is None:
-        sys.exit(
+        raise MinerUError(
             "Command 'mineru' was not found. "
             "Activate the MinerU virtual environment."
         )
@@ -88,12 +108,9 @@ def run_mineru(
 
     command = [
         executable,
-        "-p",
-        str(pdf),
-        "-o",
-        str(raw_dir),
-        "-b",
-        backend,
+        "-p", str(pdf),
+        "-o", str(raw_dir),
+        "-b", backend,
     ]
 
     if skip_tables:
@@ -117,7 +134,6 @@ def run_mineru(
         args=(process, monitor_stats, stop_event),
         daemon=True,
     )
-
     monitor_thread.start()
 
     return_code = process.wait()
@@ -133,12 +149,11 @@ def run_mineru(
         "ram_average": 0,
         "ram_max": 0,
     }
-
     for key, default in defaults.items():
         stats[key] = monitor_stats.get(key, default)
 
     if return_code != 0:
-        sys.exit(
+        raise MinerUError(
             f"MinerU failed with return code {return_code}."
         )
 
@@ -146,12 +161,20 @@ def run_mineru(
 
 
 def find_content_list(raw_dir: Path) -> Path:
-    candidates = list(
-        raw_dir.rglob("*content_list*.json")
-    )
+    """
+    Find the most relevant `*content_list*.json` file in `raw_dir`.
+
+    Prefers v2 files, then most recently modified.
+
+    Raises
+    ------
+    MinerUError
+        If no matching file exists.
+    """
+    candidates = list(raw_dir.rglob("*content_list*.json"))
 
     if not candidates:
-        sys.exit(
+        raise MinerUError(
             f"No *content_list*.json file found in {raw_dir}."
         )
 

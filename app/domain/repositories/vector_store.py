@@ -1,5 +1,6 @@
-# domain/repositories/vector_store.py
-"""Port: store and query dense vectors."""
+"""
+Port for storing and querying dense vectors.
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -13,14 +14,10 @@ class VectorStorePort(ABC):
     """
     Dense vector index over chunk embeddings.
 
-    Implementations may hold OS-level resources (file locks, sockets).
-    They MUST release them on `close()`, and SHOULD support being used
-    as a context manager so the composition root never leaks them.
+    Implementations may hold OS-level resources such as file locks or
+    sockets. They must release those resources through `close()` and
+    should support context-manager usage.
     """
-
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
 
     @abstractmethod
     def upsert(
@@ -29,12 +26,12 @@ class VectorStorePort(ABC):
         vectors: list[list[float]],
         payloads: list[dict[str, Any]],
     ) -> None:
-        """Insert or replace points. All three lists must have the same
-        length; a mismatch must raise IndexingError."""
+        """
+        Insert or replace points.
 
-    # ------------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------------
+        All three lists must have the same length. A mismatch must raise
+        IndexingError.
+        """
 
     @abstractmethod
     def search(
@@ -42,25 +39,39 @@ class VectorStorePort(ABC):
         query_vector: list[float],
         top_k: int,
     ) -> list[SearchResult]:
-        """Return (chunk_id, similarity_score, payload) sorted by score
-        descending. Must raise IndexingError on storage failure, never
-        silently return []."""
+        """
+        Return (chunk_id, similarity_score, payload) sorted by decreasing
+        score.
+
+        Storage failures must raise IndexingError rather than silently
+        returning an empty result.
+        """
 
     @abstractmethod
     def exists(self, chunk_id: str) -> bool:
-        """True if a point with this chunk_id is stored."""
+        """
+        Return whether a point for the given chunk ID is stored.
+
+        Storage failures must raise IndexingError rather than being
+        reported as a missing point.
+        """
 
     @abstractmethod
     def count(self) -> int:
-        """Number of points currently stored."""
+        """
+        Return the number of points currently stored.
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+        Storage failures must raise IndexingError rather than returning
+        a potentially misleading zero.
+        """
 
     @abstractmethod
     def close(self) -> None:
-        """Release the storage lock and flush to disk. Idempotent."""
+        """
+        Release storage resources.
+
+        The operation must be idempotent.
+        """
 
     def __enter__(self) -> "VectorStorePort":
         return self

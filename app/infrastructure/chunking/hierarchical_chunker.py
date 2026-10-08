@@ -1,3 +1,4 @@
+# chunking/hierarchical_chunker.py
 """
 Hybrid chunker working on the domain Document.
 
@@ -17,12 +18,14 @@ Splitting hierarchy for text, from coarsest to finest:
     whole paragraph  ->  sentences  ->  token windows (last resort)
 
 A paragraph is only exploded into sentences when it does not fit in
-max_tokens. Sentence splitting never cuts inside math or LaTeX, and a unit
-containing an equation is never cut, even if it slightly exceeds max_tokens.
+max_tokens. Sentence splitting never cuts inside math or LaTeX, and a
+unit containing an equation is never cut, even if it slightly exceeds
+max_tokens.
 
-Blocks of different nature are never merged, and two text runs separated
-by a table or an image stay in separate chunks. Chunks never cross a
-section boundary, so section / subsection metadata is always exact.
+Blocks of different nature are never merged, and two text runs
+separated by a table or an image stay in separate chunks. Chunks never
+cross a section boundary, so section / subsection metadata is always
+exact.
 """
 from __future__ import annotations
 
@@ -70,7 +73,7 @@ MERGEABLE = {Kind.TEXT, Kind.LIST}
 
 @dataclass
 class Run:
-    """Consecutive blocks of the same kind within one section."""
+    """Consecutive blocks with the same chunking kind within one section."""
 
     kind: Kind
     blocks: list[Block] = field(default_factory=list)
@@ -133,8 +136,9 @@ def _glue_leading(
     is_leading: Callable[[T], bool],
 ) -> list[list[T]]:
     """
-    Group items so that every "leading" item (an equation) travels with the
-    item below it. Leading items at the very end stay with the item above.
+    Group items so that every "leading" item (an equation) travels with
+    the item below it. Leading items at the very end stay with the item
+    above.
     """
     groups: list[list[T]] = []
     pending: list[T] = []
@@ -166,8 +170,8 @@ def _text_types(has_equation: bool) -> set[ChunkType]:
 
 def build_text_units(blocks: list[Block], config: ChunkingConfig) -> list[Unit]:
     """
-    One unit per (equations + paragraph) group. A group that does not fit in
-    max_tokens is exploded into sentence-level units.
+    One unit per (equations + paragraph) group. A group that does not
+    fit in max_tokens is exploded into sentence-level units.
     """
     units: list[Unit] = []
 
@@ -190,8 +194,8 @@ def build_text_units(blocks: list[Block], config: ChunkingConfig) -> list[Unit]:
 
 def _explode(group: list[Block]) -> list[Unit]:
     """
-    Oversized group -> one unit per sentence. Equations are kept whole and
-    glued to the sentence below; any unit with an equation is atomic.
+    Oversized group -> one unit per sentence. Equations are kept whole
+    and glued to the sentence below; any unit with an equation is atomic.
     """
     atoms: list[Atom] = []
 

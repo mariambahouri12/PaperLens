@@ -1,22 +1,10 @@
-# application/services/context_builder.py
 """
-Build the LLM context string from retrieved chunks.
+Build the LLM context from retrieved domain chunks.
 
-Each chunk is prefixed by a header containing only the fields the LLM
-needs to answer source-related questions:
-
-    [document=<filename> | section=<section path> | pages=<page numbers>]
-
-Internal identifiers (`chunk_id`, `document_id`, `chunk_index`, `type`)
-are intentionally NOT included: they carry no value for the LLM and
-waste context tokens.
-
-Captions (figure / table) are already part of `chunk.text` — the
-chunker inlines them — so there is nothing to append.
-
-The caller is responsible for keeping the total under `max_context_tokens`
-(`filter_chunks` does this). This function does not truncate.
+Only information useful to the LLM is exposed in the context header.
+Internal identifiers are intentionally excluded.
 """
+
 from __future__ import annotations
 
 from app.domain.entities.chunk import Chunk
@@ -24,25 +12,45 @@ from app.domain.entities.chunk import Chunk
 _SEPARATOR = "\n\n---\n\n"
 
 
-def build_context(chunks: list[Chunk]) -> str:
-    """Render the chunks as a single string for the LLM prompt."""
+def build_context(
+    chunks: list[Chunk],
+) -> str:
+    """Render chunks into the context sent to the LLM."""
+
     if not chunks:
         return ""
 
-    return _SEPARATOR.join(_render_chunk(chunk) for chunk in chunks)
+    return _SEPARATOR.join(
+        _render_chunk(chunk)
+        for chunk in chunks
+    )
 
 
-def _render_chunk(chunk: Chunk) -> str:
-    meta = chunk.metadata
+def _render_chunk(
+    chunk: Chunk,
+) -> str:
+    metadata = chunk.metadata
 
-    document = meta.filename or "unknown"
-    section = meta.section_path.as_string() or "root"
+    document = metadata.filename or "unknown"
+
+    section = (
+        metadata.section_path.as_string()
+        or "root"
+    )
+
     pages = (
-        ", ".join(f"p.{p}" for p in meta.page_numbers)
-        if meta.page_numbers
+        ", ".join(
+            f"p.{page}"
+            for page in metadata.page_numbers
+        )
+        if metadata.page_numbers
         else "n/a"
     )
 
-    header = f"[document={document} | section={section} | pages={pages}]"
+    header = (
+        f"[document={document} | "
+        f"section={section} | "
+        f"pages={pages}]"
+    )
 
     return f"{header}\n{chunk.text}"

@@ -1,19 +1,20 @@
-# application/use_cases/retrieve_images.py
 """
 Use case: image-focused retrieval.
 
-Given a query that explicitly asks for a figure/diagram, run the SAME
-hybrid retrieval as `AnswerQueryUseCase` and return only the images
-referenced by the top chunks. No LLM call is made.
+Runs the same hybrid retrieval pipeline as AnswerQueryUseCase but
+does not call the LLM.
 
-This keeps image retrieval aligned with the text pipeline (same index,
-same embeddings) without needing a multimodal vector DB.
+Only retrieved chunks containing an image reference are returned
+as ExtractedImage objects.
 """
+
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from app.application.services.rrf_fusion import reciprocal_rank_fusion
+from app.application.mappers.chunk_payload_mapper import ChunkPayloadMapper
+from app.application.services.hybrid_retriever import HybridRetriever
 from app.config.settings import Settings
 from app.domain.entities.image import ExtractedImage
 from app.domain.repositories.bm25_index import BM25IndexPort
@@ -22,16 +23,16 @@ from app.domain.repositories.image_resolver import ImageResolverPort
 from app.domain.repositories.vector_store import VectorStorePort
 from app.domain.value_objects.ids import DocumentId, ImageId
 
-logger = logging.getLogger("paperlens.application.retrieve_images")
+logger = logging.getLogger(
+    "paperlens.application.retrieve_images"
+)
 
 
 class RetrieveImagesUseCase:
     """
-    Retrieve images referenced by the top-ranked chunks.
+    Retrieve images referenced by top-ranked chunks.
 
-    Differs from `AnswerQueryUseCase` in two ways:
-      - it never calls the LLM,
-      - it returns only the images, not a textual answer.
+    No LLM call is performed.
     """
 
     def __init__(
@@ -43,39 +44,70 @@ class RetrieveImagesUseCase:
         image_resolver: ImageResolverPort,
     ) -> None:
         self.settings = settings
-        self.embedder = embedder
-        self.vector_store = vector_store
-        self.bm25_index = bm25_index
-        self.image_resolver = image_resolver
 
-    def run(self, query_text: str, top_k: int | None = None) -> list[ExtractedImage]:
+        self.retriever = HybridRetriever(
+            embedder=embedder,
+            vector_store=vector_store,
+            bm25_index=bm25_index,
+            rrf_k=settings.rrf_k,
+        )
+
+        self.image_resolver = image_resolver
+        self.chunk_mapper = ChunkPayloadMapper()
+
+    def run(
+        self,
+        query_text: str,
+        top_k: int | None = None,
+    ) -> list[ExtractedImage]:
+        if not query_text.strip():
+            return []
+
         candidate_k = (
             top_k
-            or self.settings.max_chunks * self.settings.retrieval_candidate_multiplier
+            if top_k is not None
+            else (
+                self.settings.max_chunks
+                * self.settings.retrieval_candidate_multiplier
+            )
         )
 
-        semantic = self._semantic_search(query_text, candidate_k)
-        lexical = self._bm25_search(query_text, candidate_k)
-        fused = reciprocal_rank_fusion(
-            [semantic, lexical],
-            k=self.settings.rrf_k,
+        fused = self.retriever.retrieve(
+            query=query_text,
+            top_k=candidate_k,
         )
 
-        # Only keep chunks that carry an image_path.
+        limit = (
+            top_k
+            if top_k is not None
+            else self.settings.max_chunks
+        )
+
+        if limit <= 0:
+            return []
+
         images: list[ExtractedImage] = []
         seen: set[str] = set()
-        limit = top_k or self.settings.max_chunks
 
         for chunk_id, _, payload in fused:
             if len(images) >= limit:
                 break
 
-            image_path = payload.get("image_path")
+            image_path = payload.get(
+                "image_path"
+            )
 
-            if not image_path or image_path in seen:
+            if not image_path:
                 continue
 
-            if not self.image_resolver.exists(image_path):
+            image_path = str(image_path)
+
+            if image_path in seen:
+                continue
+
+            if not self.image_resolver.exists(
+                image_path
+            ):
                 logger.warning(
                     "Image referenced by chunk %s is missing: %s",
                     chunk_id,
@@ -83,50 +115,71 @@ class RetrieveImagesUseCase:
                 )
                 continue
 
-            seen.add(image_path)
-
-            page_numbers = payload.get("page_numbers") or []
-            section_path = payload.get("section_path") or []
-            types = str(payload.get("types") or "")
-
-            images.append(
-                ExtractedImage(
-                    image_id=ImageId(
-                        payload.get("image_id") or image_path
-                    ),
-                    document_id=DocumentId(payload["document_id"]),
-                    image_path=image_path,
-                    page_number=page_numbers[0] if page_numbers else 0,
-                    section_path=__import__(
-                        "app.domain.value_objects.section_path",
-                        fromlist=["SectionPath"],
-                    ).SectionPath.of(section_path),
-                    caption=payload.get("text", ""),
-                    kind="chart" if "chart" in types else "image",
-                )
+            image = self._payload_to_image(
+                chunk_id,
+                payload,
             )
 
+            seen.add(image_path)
+            images.append(image)
+
         logger.info(
-            "Image query returned %d image(s) out of %d fused chunk(s)",
+            "Image retrieval returned %d image(s) "
+            "from %d fused chunk(s)",
             len(images),
             len(fused),
         )
 
         return images
 
-    # ------------------------------------------------------------------ #
+    def _payload_to_image(
+        self,
+        chunk_id: str,
+        payload: dict[str, Any],
+    ) -> ExtractedImage:
+        """
+        Build an ExtractedImage from a retrieval payload.
 
-    def _semantic_search(self, text: str, top_k: int):
-        try:
-            query_vector = self.embedder.embed_query(text)
-            return self.vector_store.search(query_vector, top_k=top_k)
-        except Exception as exc:
-            logger.warning("Semantic search failed: %s", exc)
-            return []
+        The chunk mapper is intentionally used first so the payload
+        validation and domain reconstruction remain centralized.
+        """
 
-    def _bm25_search(self, text: str, top_k: int):
-        try:
-            return self.bm25_index.search(text, top_k=top_k)
-        except Exception as exc:
-            logger.warning("BM25 search failed: %s", exc)
-            return []
+        chunk = self.chunk_mapper.to_chunk(
+            chunk_id,
+            payload,
+        )
+
+        metadata = chunk.metadata
+
+        image_path = metadata.image_path
+
+        if not image_path:
+            raise ValueError(
+                f"Chunk '{chunk_id}' does not reference an image"
+            )
+
+        return ExtractedImage(
+            image_id=(
+                metadata.image_id
+                or ImageId(image_path)
+            ),
+            document_id=(
+                metadata.document_id
+            ),
+            image_path=image_path,
+            page_number=(
+                metadata.page_numbers[0]
+                if metadata.page_numbers
+                else 0
+            ),
+            section_path=metadata.section_path,
+            caption="",
+            kind=(
+                "chart"
+                if any(
+                    chunk_type.value == "chart"
+                    for chunk_type in metadata.chunk_types
+                )
+                else "image"
+            ),
+        )

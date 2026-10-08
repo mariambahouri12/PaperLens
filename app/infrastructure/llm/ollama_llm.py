@@ -1,4 +1,3 @@
-#llm/ollma_llm.py
 """
 Local LLM adapter for Ollama.
 
@@ -13,10 +12,12 @@ default (`llm_think=False`): answers are faster, cheaper in context tokens
 and the answer never gets cut by `num_ctx` in the middle of the reasoning.
 Any <think>...</think> block that still reaches the answer is removed.
 """
+
 from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 import ollama
 
@@ -26,10 +27,14 @@ from app.domain.repositories.llm import LLMPort
 
 logger = logging.getLogger("paperlens.infrastructure.llm")
 
-_THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_THINK_BLOCK = re.compile(
+    r"<think>.*?(?:</think>|$)\s*",
+    re.DOTALL,
+)
 
 
 def _strip_thinking(text: str) -> str:
+    """Remove Qwen thinking blocks, including an unfinished final block."""
     return _THINK_BLOCK.sub("", text or "").strip()
 
 
@@ -66,11 +71,20 @@ class OllamaLLM(LLMPort):
         return answer
 
     @staticmethod
-    def _content(response) -> str:
-        try:
-            return response["message"]["content"]
-        except Exception:
+    def _content(response: Any) -> str:
+        """Extract generated text from supported Ollama response shapes."""
+
+        if isinstance(response, dict):
             try:
-                return response.message.content  # type: ignore[attr-defined]
-            except Exception as exc:
-                raise LLMError(f"Unexpected Ollama response shape: {exc}") from exc
+                return response["message"]["content"]
+            except (KeyError, TypeError) as exc:
+                raise LLMError(
+                    f"Unexpected Ollama response shape: {exc}"
+                ) from exc
+
+        try:
+            return response.message.content
+        except AttributeError as exc:
+            raise LLMError(
+                f"Unexpected Ollama response shape: {exc}"
+            ) from exc

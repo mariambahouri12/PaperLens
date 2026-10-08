@@ -1,25 +1,31 @@
-#logging/structured_logger.py
 """
-Structured logging.
+Structured logging configuration for PaperLens.
 
-Console: one human-readable line per record, for local runs.
-File (optional): one JSON record per line, so logs can be shipped to any
-aggregator. All modules log under "paperlens.<layer>".
+Console:
+    Human-readable logs for local development and execution.
+
+File (optional):
+    One JSON record per line, suitable for log shipping and aggregation.
+
+All application loggers should use the ``paperlens.<layer>`` namespace.
 """
 from __future__ import annotations
 
 import json
 import logging
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 class JSONFormatter(logging.Formatter):
+    """Format log records as one JSON object per line."""
+
     def format(self, record: logging.LogRecord) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(
-                record.created, timezone.utc
+                record.created,
+                timezone.utc,
             ).isoformat(),
             "level": record.levelname,
             "logger": record.name,
@@ -29,34 +35,53 @@ class JSONFormatter(logging.Formatter):
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
 
-        # Extra context: logger.info("...", extra={"ctx_document_id": "abc"})
+        context: dict[str, Any] = {}
+
         for key, value in record.__dict__.items():
             if key.startswith("ctx_"):
-                payload[key[4:]] = value
+                context[key[4:]] = value
 
-        return json.dumps(payload, ensure_ascii=False, default=str)
+        if context:
+            payload["context"] = context
+
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            default=str,
+        )
 
 
-def configure_logging(level: str = "INFO", log_file: Path | None = None) -> None:
-    root = logging.getLogger("paperlens")
-    root.setLevel(level.upper())
-    root.handlers.clear()
-    root.propagate = False
+def configure_logging(
+    level: str = "INFO",
+    log_file: Path | None = None,
+) -> None:
+    """
+    Configure PaperLens logging.
 
-    # A Windows console (cp1252) cannot print every character found in
-    # papers: replace instead of letting logging print a traceback.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")
+    Calling this function multiple times replaces the previous PaperLens
+    handlers instead of creating duplicate log entries.
+    """
+    logger = logging.getLogger("paperlens")
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(
-        logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s")
+    logger.setLevel(level.upper())
+    logger.handlers.clear()
+    logger.propagate = False
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | "
+            "%(name)s | %(message)s"
+        )
     )
-    root.addHandler(console)
+    logger.addHandler(console_handler)
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler = logging.FileHandler(
+            log_file,
+            encoding="utf-8",
+        )
         file_handler.setFormatter(JSONFormatter())
-        root.addHandler(file_handler)
+        logger.addHandler(file_handler)

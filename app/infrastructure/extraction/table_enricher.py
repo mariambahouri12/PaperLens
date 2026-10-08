@@ -1,21 +1,53 @@
-# extraction/table_enricher.py
+# app/infrastructure/extraction/table_enricher.py
+"""
+Table enrichment orchestration.
+
+Flow:
+
+    MinerU table
+         |
+         v
+    Gemini
+      /   \
+ success  failure
+   |        |
+   v        v
+ Gemini   MinerU fallback
+
+Gemini is optional. If it is unavailable, the document remains usable
+with the MinerU table representation.
+"""
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
 from PIL import Image
 
+from app.domain.exceptions import GeminiError
+
 from . import api
 from .document_builder import iter_tables
+from .gemini_client import (
+    PAUSE_BETWEEN_IMAGES,
+    get_client,
+    pick_models,
+)
+from .gemini_prompts import GEMINI_TABLE_HINT
 from .table_parser import html_to_rows
 
+logger = logging.getLogger(
+    "paperlens.infrastructure.table_enricher"
+)
 
-GEMINI_HINT = (
-    "Extract only the table grid (header and data rows). Ignore the caption, title, "
-    "footnotes and any text outside the grid. Every value must be a JSON string exactly "
-    'as printed (for example "5.00" or "100K"), never a JSON number.'
+
+_EXPECTED_TABLE_ERRORS = (
+    GeminiError,
+    FileNotFoundError,
+    ValueError,
+    OSError,
 )
 
 
@@ -26,9 +58,12 @@ def apply_table(
     source: str,
     warnings: list | None = None,
 ) -> None:
+    """
+    Write normalized table data onto a table block.
+    """
     cols = api.unique(columns)
 
-    clean = []
+    clean: list[list[str | None]] = []
     bad = 0
 
     for row in rows:
@@ -36,30 +71,23 @@ def apply_table(
 
         if len(row) != len(cols):
             bad += 1
-
             row = (
-                row
-                + [None] * len(cols)
+                row + [None] * len(cols)
             )[:len(cols)]
 
-        clean.append([
-            None if value is None
-            else str(value)
-            for value in row
-        ])
+        clean.append(
+            [
+                None if value is None else str(value)
+                for value in row
+            ]
+        )
 
-    block.pop(
-        "mineru_html",
-        None,
-    )
-
+    block.pop("mineru_html", None)
     block["source"] = source
     block["columns"] = cols
     block["rows"] = clean
 
-    warning_list = list(
-        warnings or []
-    )
+    warning_list = list(warnings or [])
 
     if bad:
         warning_list.append(
@@ -76,16 +104,16 @@ def apply_fallback(
     block: dict,
     error: str,
 ) -> None:
+    """
+    Populate a table block from MinerU HTML.
+    """
     rows = html_to_rows(
-        block.get(
-            "mineru_html",
-            "",
-        )
+        block.get("mineru_html", "")
     )
 
     warnings = [
         f"Gemini failed ({error}); "
-        f"MinerU version preserved"
+        "MinerU version preserved"
     ]
 
     if rows:
@@ -98,10 +126,7 @@ def apply_fallback(
         )
         return
 
-    block.pop(
-        "mineru_html",
-        None,
-    )
+    block.pop("mineru_html", None)
 
     block.update(
         source="mineru_fallback",
@@ -117,6 +142,12 @@ def enrich_tables(
     force: bool,
     stats: dict,
 ) -> None:
+    """
+    Enrich all document tables with Gemini when available.
+
+    Every table-level Gemini failure falls back to MinerU.
+    Unexpected programming errors are not swallowed.
+    """
     tables = list(
         iter_tables(document["content"])
     )
@@ -142,25 +173,46 @@ def enrich_tables(
     )
     print("=" * 70)
 
+    try:
+        client = get_client()
+        models = pick_models(client)
+
+    except GeminiError as exc:
+        print(
+            f"Gemini unavailable ({exc}); "
+            "using MinerU fallback for all tables."
+        )
+
+        logger.warning(
+            "Gemini unavailable: %s",
+            exc,
+        )
+
+        for number, block in enumerate(tables, 1):
+            block["id"] = f"table_{number}"
+
+            apply_fallback(
+                block,
+                "Gemini unavailable",
+            )
+
+            stats["tables_failed"] += 1
+
+        return
+
     cache_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    client = api.get_client()
-    models = api.pick_models(client)
-
     start = time.perf_counter()
 
-    for number, block in enumerate(
-        tables,
-        1,
-    ):
+    for number, block in enumerate(tables, 1):
         block["id"] = f"table_{number}"
 
         cache_file = (
-            cache_dir
-            / f"table_{number}.json"
+            cache_dir /
+            f"table_{number}.json"
         )
 
         label = (
@@ -170,10 +222,7 @@ def enrich_tables(
         )
 
         try:
-            if (
-                cache_file.is_file()
-                and not force
-            ):
+            if cache_file.is_file() and not force:
                 table = json.loads(
                     cache_file.read_text(
                         encoding="utf-8"
@@ -181,7 +230,6 @@ def enrich_tables(
                 )
 
                 stats["tables_cached"] += 1
-
                 print(f"{label}: cache")
 
             else:
@@ -201,16 +249,15 @@ def enrich_tables(
                     f"{label}: sending to Gemini"
                 )
 
-                image = Image.open(
-                    image_path
-                ).convert("RGB")
+                with Image.open(image_path) as source:
+                    image = source.convert("RGB")
 
-                raw = api.call_gemini(
-                    client,
-                    models,
-                    image,
-                    extra_hint=GEMINI_HINT,
-                )
+                    raw = api.call_gemini(
+                        client,
+                        models,
+                        image,
+                        extra_hint=GEMINI_TABLE_HINT,
+                    )
 
                 found = api.parse_json(raw)
 
@@ -219,16 +266,10 @@ def enrich_tables(
                         "No table detected by Gemini"
                     )
 
-                if len(found) > 1:
-                    print(
-                        f"  {len(found)} tables detected "
-                        f"in the image; keeping the longest one"
-                    )
-
                 table = max(
                     found,
                     key=lambda value: len(
-                        value.get("rows", [])
+                        value["rows"]
                     ),
                 )
 
@@ -242,24 +283,27 @@ def enrich_tables(
                 )
 
                 time.sleep(
-                    api.PAUSE_BETWEEN_IMAGES
+                    PAUSE_BETWEEN_IMAGES
                 )
 
             apply_table(
                 block,
-                table.get("columns", []),
-                table.get("rows", []),
+                table["columns"],
+                table["rows"],
                 "gemini",
             )
 
             stats["tables_ok"] += 1
 
-        except (
-            Exception,
-            SystemExit,
-        ) as error:
+        except _EXPECTED_TABLE_ERRORS as error:
             print(
                 f"  FAILED: {error}"
+            )
+
+            logger.warning(
+                "Table %s failed: %s",
+                block.get("id"),
+                error,
             )
 
             apply_fallback(

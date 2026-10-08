@@ -1,35 +1,32 @@
+# chunking/token_counter.py
 """
 Token counting and token-based splitting helpers.
-...
+
+`tiktoken` is a REQUIRED dependency: the chunker enforces a strict
+`max_tokens` budget, which is only meaningful with a real tokenizer.
+If `tiktoken` is not installed, importing this module raises the
+usual `ImportError`, which is the desired behaviour (fail loudly).
 """
 from __future__ import annotations
 
 from collections.abc import Iterator
 from functools import lru_cache
 
-_CHARS_PER_TOKEN = 4
+import tiktoken
 
 
 @lru_cache(maxsize=1)
 def _encoder():
-    try:
-        import tiktoken
-
-        return tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        return None
+    """Return the cached `cl100k_base` encoder (a module-level singleton)."""
+    return tiktoken.get_encoding("cl100k_base")
 
 
 def count_tokens(text: str) -> int:
+    """Return the exact number of tokens in `text`."""
     if not text:
         return 0
 
-    encoder = _encoder()
-
-    if encoder is None:
-        return max(1, len(text) // _CHARS_PER_TOKEN)
-
-    return len(encoder.encode(text))
+    return len(_encoder().encode(text))
 
 
 def _windows(length: int, size: int, overlap: int) -> Iterator[tuple[int, int]]:
@@ -53,17 +50,6 @@ def split_by_tokens(text: str, size: int, overlap: int) -> list[str]:
         raise ValueError("size must be greater than overlap")
 
     encoder = _encoder()
-
-    if encoder is None:
-        return [
-            text[start:end]
-            for start, end in _windows(
-                len(text),
-                size * _CHARS_PER_TOKEN,
-                overlap * _CHARS_PER_TOKEN,
-            )
-        ]
-
     tokens = encoder.encode(text)
 
     return [

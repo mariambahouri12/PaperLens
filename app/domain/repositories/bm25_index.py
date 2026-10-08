@@ -1,9 +1,12 @@
-# domain/repositories/bm25_index.py
-"""Port: lexical BM25 index over chunk texts."""
+
+"""
+Port: lexical BM25 index over chunk texts.
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
+
 
 SearchResult = tuple[str, float, dict[str, Any]]
 
@@ -28,7 +31,7 @@ class BM25IndexPort(ABC):
         texts: list[str],
         payloads: list[dict[str, Any]],
     ) -> None:
-        """Add chunks. Existing ids are ignored (idempotent)."""
+        """Add chunks. Existing IDs are ignored (idempotent)."""
 
     @abstractmethod
     def persist(self) -> None:
@@ -36,8 +39,11 @@ class BM25IndexPort(ABC):
 
     @abstractmethod
     def load(self) -> None:
-        """Restore the state from disk. Must raise IndexingError if the
-        file exists but is unreadable."""
+        """
+        Restore the state from disk.
+
+        Must raise IndexingError if the file exists but is unreadable.
+        """
 
     # ------------------------------------------------------------------
     # Read
@@ -49,17 +55,23 @@ class BM25IndexPort(ABC):
         query: str,
         top_k: int,
     ) -> list[SearchResult]:
-        """Return (chunk_id, bm25_score, payload) sorted by score
-        descending. Must raise IndexingError on failure, never silently
-        return []."""
+        """
+        Return (chunk_id, BM25 score, payload) sorted by score descending.
+
+        Must raise IndexingError on failure, never silently return [].
+        """
 
     @abstractmethod
     def count(self) -> int:
-        """Number of documents currently indexed."""
+        """Return the number of documents currently indexed."""
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """No-op for BM25; kept for uniformity. Idempotent."""
+        """
+        No-op for BM25; kept for interface uniformity.
+
+        The method is idempotent.
+        """

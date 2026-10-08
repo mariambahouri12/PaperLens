@@ -1,10 +1,10 @@
-# domain/repositories/image_resolver.py
+
 """
 Read-only access to image files referenced by chunks.
 
-Images are NEVER copied: the extraction pipeline already stores them on
-disk (MinerU writes content-hash file names) and the chunk metadata
-carries the real path. This port only exposes a safe way to read them.
+Images are never copied: the extraction pipeline already stores them on
+disk, and chunk metadata carries the real path. This port exposes only
+the operations required to safely resolve and read those images.
 """
 from __future__ import annotations
 
@@ -13,23 +13,30 @@ from pathlib import Path
 
 
 class ImageResolverPort(ABC):
-    """Resolve and load images referenced by chunks."""
+    """Port for resolving and loading images referenced by chunks."""
 
     @abstractmethod
     def resolve(self, image_path: str) -> Path:
-        """Absolute path of the image.
+        """
+        Return the resolved absolute path of an image.
 
-        Raises ImageResolverError if the path is empty, outside the
-        allowed roots, or does not point to a readable file.
+        Raises:
+            ImageStoreError: If the path is empty, invalid, outside the
+                allowed roots, or does not point to a readable file.
         """
 
     @abstractmethod
     def load(self, image_path: str) -> bytes:
-        """Raw bytes of the image.
+        """
+        Return the raw bytes of an image.
 
-        Raises ImageResolverError on any failure.
+        Raises:
+            ImageStoreError: If the image cannot be loaded.
         """
 
     @abstractmethod
     def exists(self, image_path: str) -> bool:
-        """True if the image file exists and is readable."""
+        """
+        Return whether the image exists and is accessible through
+        the resolver.
+        """

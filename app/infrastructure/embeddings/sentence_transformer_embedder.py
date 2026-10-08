@@ -1,4 +1,4 @@
-#embeddings/sentence_transformer_embedder.py
+# infrastructure/embeddings/sentence_transformer_embedder.py
 """
 Embedder backed by sentence-transformers.
 
@@ -7,8 +7,11 @@ Default model: nomic-ai/nomic-embed-text-v1.5 (768 dimensions, Matryoshka,
 output dimension, max sequence length, device) is read from settings, so
 switching model is a configuration change, not a code change.
 
-The model is loaded lazily and cached, so building several embedders with
-the same configuration is cheap.
+The underlying `SentenceTransformer` instance is loaded on first
+instantiation and cached by configuration, so building several
+embedders with the same parameters is cheap. Two embedders built
+with different settings (model, device, dimension, ...) get two
+different cached models.
 """
 from __future__ import annotations
 
@@ -30,6 +33,17 @@ def _load_model(
     dimension: int,
     max_seq_length: int,
 ):
+    """
+    Return a cached `SentenceTransformer` for the given configuration.
+
+    The cache key contains every parameter that influences the loaded
+    model, so two callers with different settings never share the wrong
+    instance.
+
+    `sentence_transformers` is imported here (not at module level) so
+    this module can be imported in environments where the library is
+    not installed (e.g. linting, unit tests that mock the model).
+    """
     from sentence_transformers import SentenceTransformer
 
     logger.info(
@@ -51,6 +65,12 @@ def _load_model(
 
 
 class SentenceTransformerEmbedder(EmbedderPort):
+    """
+    `EmbedderPort` implementation backed by sentence-transformers.
+
+    See the module docstring for the model and configuration notes.
+    """
+
     def __init__(self, model_name: str | None = None) -> None:
         self.model_name = model_name or settings.embedding_model
 
@@ -68,6 +88,8 @@ class SentenceTransformerEmbedder(EmbedderPort):
             raise
 
         except Exception as exc:
+            # Any SDK error (download failure, invalid model, ...) is
+            # translated to EmbeddingError so callers only handle one type.
             raise EmbeddingError(
                 f"Could not load embedding model '{self.model_name}': {exc}"
             ) from exc
@@ -76,10 +98,7 @@ class SentenceTransformerEmbedder(EmbedderPort):
     def dimension(self) -> int:
         return self._dimension
 
-    def embed_documents(
-        self,
-        texts: list[str],
-    ) -> list[list[float]]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
 
@@ -110,12 +129,20 @@ class SentenceTransformerEmbedder(EmbedderPort):
             show_progress_bar=False,
         )
 
+        # numpy array -> list[list[float]]: JSON-serializable, ready for
+        # any vector store.
         return [vector.tolist() for vector in vectors]
 
     def _probe_dimension(self) -> int:
         """
-        Measure the real output size and make sure it matches the settings,
-        so the vector store is never created with the wrong dimension.
+        Measure the real output size and make sure it matches the
+        settings, so the vector store is never created with the wrong
+        dimension.
+
+        Uses a real `encode` call rather than
+        `get_sentence_embedding_dimension()` because the latter may
+        return the pre-truncation size for models that support
+        Matryoshka truncation.
         """
         vectors = self._model.encode(
             ["dimension probe"],
