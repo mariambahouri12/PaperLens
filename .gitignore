@@ -1,2 +1,5 @@
 .venv/
-c
+__pycache__/
+*.pyc
+output/
+test1.pdf

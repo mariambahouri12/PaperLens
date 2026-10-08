@@ -1,22 +1,28 @@
 """
 Pack small text units into chunks of at most `max_tokens`.
 
-A unit is an indivisible piece (a paragraph, an equation glued to the
-paragraph below it, a reference...). Units are never split, except when
-a single unit is larger than max_tokens: it is then cut into
+A unit is an indivisible piece (a paragraph, a sentence, an equation glued
+to the text below it, a reference...). Units are never split, except when a
+single non-atomic unit is larger than max_tokens: it is then cut into
 overlapping token windows.
+
+Atomic units (those containing an equation) are never cut, even when they
+exceed max_tokens, so LaTeX is never broken.
 
 Overlap between two packed chunks is obtained by carrying over the
 trailing units that fit in `overlap_tokens`.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from app.domain.entities.chunk import ChunkType
 from app.infrastructure.chunking.config import ChunkingConfig
 from app.infrastructure.chunking.drafts import ChunkDraft, order_types
 from app.infrastructure.chunking.token_counter import count_tokens, split_by_tokens
+
+logger = logging.getLogger("paperlens.infrastructure.chunking")
 
 
 @dataclass(frozen=True)
@@ -25,14 +31,24 @@ class Unit:
     tokens: int
     pages: tuple[int, ...]
     types: tuple[ChunkType, ...]
+    sep: str | None = None  
+    atomic: bool = False  # never cut, even if larger than max_tokens
 
 
-def make_unit(text: str, pages, types) -> Unit:
+def make_unit(
+    text: str,
+    pages,
+    types,
+    sep: str | None = None,
+    atomic: bool = False,
+) -> Unit:
     return Unit(
         text=text,
         tokens=count_tokens(text),
         pages=tuple(sorted({page for page in pages if page})),
         types=order_types(types),
+        sep=sep,
+        atomic=atomic,
     )
 
 
@@ -90,6 +106,14 @@ def _overlap_tail(units: list[Unit], overlap_tokens: int) -> list[Unit]:
 
 
 def _split_oversized(unit: Unit, config: ChunkingConfig) -> list[ChunkDraft]:
+    if unit.atomic:
+        logger.warning(
+            "Unit containing an equation (%d tokens) exceeds max_tokens "
+            "and is kept whole",
+            unit.tokens,
+        )
+        return [ChunkDraft(text=unit.text, types=unit.types, pages=unit.pages)]
+
     windows = split_by_tokens(unit.text, config.max_tokens, config.overlap_tokens)
 
     return [
@@ -98,9 +122,19 @@ def _split_oversized(unit: Unit, config: ChunkingConfig) -> list[ChunkDraft]:
     ]
 
 
+def _join(units: list[Unit], separator: str) -> str:
+    """Join units; a unit's own `sep` overrides the default separator."""
+    text = units[0].text
+
+    for unit in units[1:]:
+        text += (separator if unit.sep is None else unit.sep) + unit.text
+
+    return text
+
+
 def _to_draft(units: list[Unit], separator: str) -> ChunkDraft:
     return ChunkDraft(
-        text=separator.join(unit.text for unit in units),
+        text=_join(units, separator),
         types=order_types(t for unit in units for t in unit.types),
         pages=tuple(sorted({p for unit in units for p in unit.pages})),
     )
