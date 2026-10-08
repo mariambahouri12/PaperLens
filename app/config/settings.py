@@ -25,8 +25,15 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="qwen3:8b")
 
     # --- Embeddings ---------------------------------------------------
-    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5")
-    embedding_batch_size: int = Field(default=32)
+    embedding_model: str = Field(default="nomic-ai/nomic-embed-text-v1.5")
+    embedding_batch_size: int = Field(default=32, ge=1)
+    embedding_dimension: int = Field(default=768, ge=1)
+    embedding_max_seq_length: int = Field(default=1024, ge=1)
+    embedding_device: str | None = Field(default=None)
+    embedding_document_prefix: str = Field(default="search_document: ")
+    embedding_query_prefix: str = Field(default="search_query: ")
+    embedding_normalize: bool = Field(default=True)
+    embedding_trust_remote_code: bool = Field(default=True)
 
     
 
