@@ -38,6 +38,7 @@ class ChunkMetadata:
     image_id: ImageId | None = None
     image_path: str | None = None
     table_id: TableId | None = None
+    title: str | None = None
 
     @property
     def section(self) -> str | None:

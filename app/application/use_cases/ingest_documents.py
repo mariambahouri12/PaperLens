@@ -364,6 +364,7 @@ class IngestDocumentsUseCase:
         return {
             "chunk_id": str(chunk.chunk_id),
             "document_id": str(chunk.document_id),
+            "title": metadata.title, 
             "text": chunk.text,
             "token_count": chunk.token_count,
             "filename": metadata.filename,

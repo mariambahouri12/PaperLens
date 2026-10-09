@@ -21,10 +21,11 @@ def chunk_to_dict(chunk: Chunk) -> dict:
     return {
         "chunk_id": chunk.chunk_id,
         "document_id": chunk.document_id,
+        "title": meta.title, 
+        "filename": meta.filename,
         "text": chunk.text,
         "token_count": chunk.token_count,
         "metadata": {
-            "filename": meta.filename,
             "chunk_index": meta.chunk_index,
             "chunk_types": [t.value for t in meta.chunk_types],
             "section_path": meta.section_path.as_list(),

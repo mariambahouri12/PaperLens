@@ -371,5 +371,6 @@ class HierarchicalChunker(ChunkerPort):
                 image_id=draft.image_id,
                 image_path=draft.image_path,
                 table_id=draft.table_id,
+                title=document.metadata.title,
             ),
         )
