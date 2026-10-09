@@ -1,7 +1,10 @@
 """
 Build the LLM context from retrieved domain chunks.
 
-Only information useful to the LLM is exposed in the context header.
+Each chunk is prefixed with a marker [S1], [S2], ... that the LLM uses
+to indicate which chunk supports a claim. The application then replaces
+the markers with verified, natural source mentions.
+
 Internal identifiers are intentionally excluded.
 """
 
@@ -21,13 +24,14 @@ def build_context(
         return ""
 
     return _SEPARATOR.join(
-        _render_chunk(chunk)
-        for chunk in chunks
+        _render_chunk(chunk, index)
+        for index, chunk in enumerate(chunks, start=1)
     )
 
 
 def _render_chunk(
     chunk: Chunk,
+    index: int,
 ) -> str:
     metadata = chunk.metadata
 
@@ -48,7 +52,7 @@ def _render_chunk(
     )
 
     header = (
-        f"[document={document} | "
+        f"[S{index} | document={document} | "
         f"section={section} | "
         f"pages={pages}]"
     )

@@ -18,6 +18,7 @@ dependencies = [
     "psutil>=5.9",
     "tiktoken>=0.7",
     "mineru>=1.0",
+    "streamlit>=1.30",
 ]
 
 [build-system]

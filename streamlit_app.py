@@ -1,3 +1,4 @@
+# streamlit_app.py
 """
 PaperLens Streamlit UI.
 
@@ -10,12 +11,14 @@ The Streamlit layer is responsible only for:
     - composition of application dependencies
 
 Business and retrieval logic remain in the application/domain layers.
+Sources are written naturally inside the answer text by the application
+layer, so the UI does not render a separate source block.
 """
 
 from __future__ import annotations
 
 import logging
-import re
+import threading
 from typing import Any
 
 import streamlit as st
@@ -43,6 +46,8 @@ st.set_page_config(
     page_icon="📚",
     layout="wide",
 )
+
+settings.ensure_directories()
 
 
 # ----------------------------------------------------------------------
@@ -83,6 +88,17 @@ def get_image_resolver() -> FilesystemImageResolver:
     )
 
 
+@st.cache_resource
+def get_vector_lock() -> threading.Lock:
+    """
+    Local Qdrant allows only one client at a time.
+
+    This lock serializes access when several browser tabs or reruns
+    try to open the storage folder concurrently.
+    """
+    return threading.Lock()
+
+
 def _build_vector_store() -> QdrantLocalStore:
     """Create a local Qdrant store."""
     return QdrantLocalStore(
@@ -108,29 +124,31 @@ if "history" not in st.session_state:
 def ask(question: str) -> Answer:
     """Execute the answer-query use case."""
 
-    with _build_vector_store() as vector_store:
-        use_case = AnswerQueryUseCase(
-            settings=settings,
-            embedder=get_embedder(),
-            vector_store=vector_store,
-            bm25_index=get_bm25(),
-            image_resolver=get_image_resolver(),
-            llm=get_llm(),
-        )
+    with get_vector_lock():
+        with _build_vector_store() as vector_store:
+            use_case = AnswerQueryUseCase(
+                settings=settings,
+                embedder=get_embedder(),
+                vector_store=vector_store,
+                bm25_index=get_bm25(),
+                image_resolver=get_image_resolver(),
+                llm=get_llm(),
+            )
 
-        query = Query(
-            text=question,
-            intent=QueryIntent.TEXT_AND_IMAGE,
-        )
+            query = Query(
+                text=question,
+                intent=QueryIntent.TEXT_AND_IMAGE,
+            )
 
-        return use_case.run(query)
+            return use_case.run(query)
 
 
 def get_index_stats() -> tuple[int, int]:
     """Return vector-store and BM25 chunk counts."""
 
-    with _build_vector_store() as vector_store:
-        vector_count = vector_store.count()
+    with get_vector_lock():
+        with _build_vector_store() as vector_store:
+            vector_count = vector_store.count()
 
     bm25_count = get_bm25().count()
 
@@ -138,142 +156,8 @@ def get_index_stats() -> tuple[int, int]:
 
 
 # ----------------------------------------------------------------------
-# Source relevance
-# ----------------------------------------------------------------------
-
-
-def _normalize_terms(text: str) -> set[str]:
-    """Normalize text into lowercase alphanumeric terms."""
-
-    return set(re.findall(r"\b[a-z0-9]+\b", text.lower()))
-
-
-def _select_relevant_sources(
-    answer: Answer,
-    question: str,
-    max_sources: int = 2,
-) -> list[Any]:
-    """
-    Select a small number of source chunks using a simple lexical score.
-
-    Section-name matches receive more weight than body-text matches.
-    This is a lightweight heuristic, not a semantic reranker.
-    """
-
-    if not answer.context.chunks:
-        return []
-
-    stop_words = {
-        "the", "of", "is", "are", "was", "were",
-        "what", "who", "which", "where", "when", "how",
-        "a", "an", "and", "or", "to", "in", "on", "for",
-        "about", "from", "with", "this", "that", "these",
-        "those", "paper", "please", "explain", "tell",
-    }
-
-    question_terms = _normalize_terms(question) - stop_words
-
-    # Avoid matching generic words such as "authors" only against
-    # the document section title.
-    if not question_terms:
-        question_terms = _normalize_terms(question)
-
-    ranked: list[tuple[int, int, Any]] = []
-
-    for index, chunk in enumerate(answer.context.chunks):
-        metadata = chunk.metadata
-        section = metadata.section_path.as_string() or ""
-
-        section_terms = _normalize_terms(section)
-        filename_terms = _normalize_terms(metadata.filename or "")
-        body_terms = _normalize_terms(chunk.text)
-
-        section_matches = len(question_terms & section_terms)
-        filename_matches = len(question_terms & filename_terms)
-        body_matches = len(question_terms & body_terms)
-
-        score = (
-            4 * section_matches
-            + 2 * filename_matches
-            + body_matches
-        )
-
-        ranked.append((score, index, chunk))
-
-    # Keep original retrieval order as a tie-breaker.
-    ranked.sort(key=lambda item: (-item[0], item[1]))
-
-    selected = []
-    seen_sources = set()
-
-    for score, _, chunk in ranked:
-        if score <= 0:
-            continue
-
-        metadata = chunk.metadata
-
-        source_key = (
-            metadata.filename or "unknown",
-            tuple(metadata.page_numbers),
-            metadata.section_path.as_string() or "root",
-        )
-
-        if source_key in seen_sources:
-            continue
-
-        seen_sources.add(source_key)
-        selected.append(chunk)
-
-        if len(selected) >= max_sources:
-            break
-
-    # Fallback: if there are no lexical matches, use the top-ranked
-    # retrieved chunk rather than displaying every retrieved chunk.
-    if not selected:
-        selected.append(answer.context.chunks[0])
-
-    return selected
-
-
-# ----------------------------------------------------------------------
 # UI helpers
 # ----------------------------------------------------------------------
-
-
-def _render_sources(
-    answer: Answer,
-    question: str,
-) -> None:
-    """Render concise source metadata without chunk previews."""
-
-    sources = _select_relevant_sources(
-        answer=answer,
-        question=question,
-        max_sources=2,
-    )
-
-    if not sources:
-        return
-
-    st.markdown(
-        "**Source:**" if len(sources) == 1 else "**Sources:**"
-    )
-
-    for chunk in sources:
-        metadata = chunk.metadata
-
-        document = metadata.filename or "unknown"
-        section = metadata.section_path.as_string() or "root"
-
-        pages = (
-            ", ".join(f"p.{page}" for page in metadata.page_numbers)
-            if metadata.page_numbers
-            else "p.n/a"
-        )
-
-        st.caption(
-            f"📄 {document} — {pages} — section {section}"
-        )
 
 
 def _render_images(answer: Answer) -> None:
@@ -281,8 +165,6 @@ def _render_images(answer: Answer) -> None:
 
     if not answer.used_images:
         return
-
-    st.markdown(f"#### 🖼️ Figures ({len(answer.used_images)})")
 
     columns = st.columns(min(len(answer.used_images), 3))
 
@@ -302,31 +184,21 @@ def _render_images(answer: Answer) -> None:
                 st.warning(f"Could not load image: {exc}")
 
 
-def _render_answer(entry: dict[str, Any]) -> None:
-    """Render one question/answer entry."""
+def _render_entry(entry: dict[str, Any]) -> None:
+    """Render one question/answer exchange as chat bubbles."""
 
-    answer: Answer = entry["answer"]
-    question = entry["question"]
+    with st.chat_message("user"):
+        st.markdown(entry["question"])
 
-    st.divider()
-    st.markdown(f"### ❓ {question}")
-    st.markdown(answer.text)
-
-    _render_sources(
-        answer=answer,
-        question=question,
-    )
-
-    _render_images(answer)
+    with st.chat_message("assistant"):
+        st.markdown(entry["answer"].text)
+        _render_images(entry["answer"])
 
 
 # ----------------------------------------------------------------------
-# Main UI
+# Sidebar
 # ----------------------------------------------------------------------
 
-
-st.title("📚 PaperLens")
-st.caption("Ask questions about your research papers.")
 
 with st.sidebar:
     st.header("📊 Index")
@@ -347,54 +219,49 @@ with st.sidebar:
     st.write(f"**Model:** `{settings.llm_model}`")
     st.write(f"**Max chunks:** {settings.max_chunks}")
 
-    if st.button("🗑️ Clear history"):
+    if st.button("🗑️ Clear conversation"):
         st.session_state.history = []
         st.rerun()
 
 
-question = st.text_input(
-    "Your question",
-    placeholder="e.g. Who are the authors of the paper?",
-)
-
-col1, col2 = st.columns([1, 6])
-
-with col1:
-    ask_clicked = st.button(
-        "🔍 Ask",
-        type="primary",
-        use_container_width=True,
-    )
+# ----------------------------------------------------------------------
+# Main chat
+# ----------------------------------------------------------------------
 
 
-if ask_clicked:
-    if not question.strip():
-        st.warning("Please enter a question.")
+st.title("📚 PaperLens")
 
-    else:
-        clean_question = question.strip()
+if not st.session_state.history:
+    st.caption("Ask questions about your research papers.")
 
-        with st.spinner("Thinking..."):
-            try:
+# Conversation so far (oldest first, like a normal chat).
+for entry in st.session_state.history:
+    _render_entry(entry)
+
+# Input pinned at the bottom of the page.
+prompt = st.chat_input("Ask a question about your papers...")
+
+if prompt and prompt.strip():
+    clean_question = prompt.strip()
+
+    with st.chat_message("user"):
+        st.markdown(clean_question)
+
+    with st.chat_message("assistant"):
+        try:
+            with st.spinner("Thinking..."):
                 answer = ask(clean_question)
 
-                st.session_state.history.insert(
-                    0,
-                    {
-                        "question": clean_question,
-                        "answer": answer,
-                    },
-                )
+            st.markdown(answer.text)
+            _render_images(answer)
 
-            except Exception as exc:
-                logger.exception("Question processing failed")
-                st.error(f"Error: {exc}")
+            st.session_state.history.append(
+                {
+                    "question": clean_question,
+                    "answer": answer,
+                }
+            )
 
-
-# ----------------------------------------------------------------------
-# History
-# ----------------------------------------------------------------------
-
-
-for entry in st.session_state.history:
-    _render_answer(entry)
+        except Exception as exc:
+            logger.exception("Question processing failed")
+            st.error(f"Error: {exc}")

@@ -46,10 +46,10 @@ class Settings(BaseSettings):
 
     # --- Retrieval -----------------------------------------------------
     min_relevance_score: float = Field(default=0.005)
-    max_chunks: int = Field(default=4, ge=1)
+    max_chunks: int = Field(default=6, ge=1)
     max_context_tokens: int = Field(default=6000, ge=1)
     rrf_k: int = Field(default=60, ge=1)
-    retrieval_candidate_multiplier: int = Field(default=3, ge=1)
+    retrieval_candidate_multiplier: int = Field(default=1, ge=1)
 
     # --- LLM -----------------------------------------------------------
     temperature: float = Field(default=0.0)
@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     # --- Derived paths -------------------------------------------------
+    @property
+    def uploads_dir(self) -> Path:
+        """Directory where PDFs uploaded from the web UI are stored."""
+        return self.data_dir / "uploads"
+
     @property
     def output_dir(self) -> Path:
         """Final artifacts only: `<stem>_chunking.json`."""
@@ -92,6 +97,7 @@ class Settings(BaseSettings):
             self.data_dir,
             self.image_dir,
             self.storage_dir,
+            self.uploads_dir,
             self.output_dir,
             self.debug_dir,
             self.mineru_raw_dir,
