@@ -35,6 +35,7 @@ from app.infrastructure.image_store.filesystem_image_resolver import (
     FilesystemImageResolver,
 )
 from app.infrastructure.llm.ollama_llm import OllamaLLM
+from app.infrastructure.logging.structured_logger import configure_logging
 from app.infrastructure.vector_store.qdrant_local_store import (
     QdrantLocalStore,
 )
@@ -48,6 +49,29 @@ st.set_page_config(
 )
 
 settings.ensure_directories()
+
+
+# ----------------------------------------------------------------------
+# Logging
+# ----------------------------------------------------------------------
+
+
+@st.cache_resource
+def setup_logging() -> bool:
+    """
+    Configure PaperLens logging once per Streamlit server process.
+
+    Streamlit re-runs this script on every interaction; caching avoids
+    reopening the log file each time.
+    """
+    configure_logging(
+        level=settings.log_level,
+        log_file=settings.data_dir / "logs" / "paperlens.jsonl",
+    )
+    return True
+
+
+setup_logging()
 
 
 # ----------------------------------------------------------------------

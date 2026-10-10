@@ -1,3 +1,4 @@
+
 # config/settings.py
 """
 Single source of truth for all configurable parameters.
@@ -28,6 +29,7 @@ class Settings(BaseSettings):
 
     # --- Models --------------------------------------------------------
     llm_model: str = Field(default="qwen3:8b")
+    seed: int = Field(default=42)
 
     # --- Embeddings ----------------------------------------------------
     embedding_model: str = Field(default="nomic-ai/nomic-embed-text-v1.5")
@@ -48,8 +50,22 @@ class Settings(BaseSettings):
     min_relevance_score: float = Field(default=0.005)
     max_chunks: int = Field(default=6, ge=1)
     max_context_tokens: int = Field(default=6000, ge=1)
+
+    # Retrieval strategies (disabled by default)
+    use_bm25: bool = Field(default=False)
+    use_dense: bool = Field(default=False)
+    use_rrf: bool = Field(default=True)
+
     rrf_k: int = Field(default=60, ge=1)
     retrieval_candidate_multiplier: int = Field(default=1, ge=1)
+
+     # --- Reranking -----------------------------------------------------
+    use_reranker: bool = Field(default=False)
+    reranker_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+    reranker_candidate_k: int = Field(default=30, ge=1)
+    reranker_device: str = Field(default="cpu")
 
     # --- LLM -----------------------------------------------------------
     temperature: float = Field(default=0.0)

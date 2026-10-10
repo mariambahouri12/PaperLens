@@ -1,3 +1,4 @@
+
 # interfaces/cli/commands.py
 """
 Composition root + CLI for PaperLens.
@@ -6,7 +7,7 @@ This is the ONLY module that knows about every concrete adapter.
 The CLI commands build the use cases with the required dependencies
 and call them.
 
-Nothing in `domain/` or `application/` imports a specific external
+Nothing in domain/ or application/ imports a specific external
 library such as qdrant-client, rank_bm25, sentence-transformers,
 ollama, Typer, etc.
 
@@ -81,9 +82,7 @@ def _version_callback(value: bool) -> None:
     """Print the application version and exit."""
 
     if value:
-        typer.echo(
-            f"PaperLens {__version__}"
-        )
+        typer.echo(f"PaperLens {__version__}")
         raise typer.Exit()
 
 
@@ -104,10 +103,7 @@ def main(
         typer.Option(
             "--log-level",
             "-l",
-            help=(
-                "Logging level "
-                "(DEBUG, INFO, WARNING, ERROR)."
-            ),
+            help="Logging level (DEBUG, INFO, WARNING, ERROR).",
             envvar="PAPERLENS_LOG_LEVEL",
         ),
     ] = "",
@@ -119,14 +115,8 @@ def main(
     Individual commands do not modify logging configuration.
     """
 
-    level = (
-        log_level
-        or default_settings.log_level
-    )
-
-    configure_logging(
-        level=level,
-    )
+    level = log_level or default_settings.log_level
+    configure_logging(level=level)
 
 
 # ----------------------------------------------------------------------
@@ -142,7 +132,6 @@ def _build_settings() -> Settings:
     """
 
     default_settings.ensure_directories()
-
     return default_settings
 
 
@@ -152,20 +141,14 @@ def _build_chunker(
     """Build the hierarchical document chunker."""
 
     return HierarchicalChunker(
-        ChunkingConfig.from_settings(
-            settings,
-        ),
+        ChunkingConfig.from_settings(settings),
     )
 
 
 def _build_embedder(
     settings: Settings,
 ) -> SentenceTransformerEmbedder:
-    """
-    Build the embedding adapter.
-
-    The adapter reads its model configuration from Settings.
-    """
+    """Build the embedding adapter."""
 
     return SentenceTransformerEmbedder()
 
@@ -178,10 +161,24 @@ def _build_bm25(
     index = RankBM25Index(
         persist_path=settings.bm25_store_path,
     )
-
     index.load()
-
     return index
+
+
+def _build_reranker(settings: Settings):
+    """Build the Cross-Encoder only when reranking is enabled."""
+
+    if not settings.use_reranker:
+        return None
+
+    from app.infrastructure.reranking.cross_encoder_reranker import (
+        CrossEncoderReranker,
+    )
+
+    return CrossEncoderReranker(
+        model_name=settings.reranker_model,
+        device=settings.reranker_device,
+    )
 
 
 def _build_checkpoint(
@@ -189,9 +186,7 @@ def _build_checkpoint(
 ) -> JsonCheckpointRepository:
     """Build the persistent checkpoint repository."""
 
-    return JsonCheckpointRepository(
-        settings.checkpoint_path,
-    )
+    return JsonCheckpointRepository(settings.checkpoint_path)
 
 
 def _build_image_resolver(
@@ -233,10 +228,7 @@ def ingest(
         typer.Option(
             "--force",
             "-f",
-            help=(
-                "Ignore the checkpoint and re-index "
-                "every chunk."
-            ),
+            help="Ignore the checkpoint and re-index every chunk.",
         ),
     ] = False,
 ) -> None:
@@ -250,23 +242,13 @@ def ingest(
     if data_dir is not None:
         settings.data_dir = data_dir
 
-        # The derived directories are properties of Settings,
-        # so they automatically follow the overridden data_dir.
-
-    checkpoint = _build_checkpoint(
-        settings,
-    )
+    checkpoint = _build_checkpoint(settings)
 
     if force:
-        logger.info(
-            "--force set: resetting the checkpoint"
-        )
-
+        logger.info("--force set: resetting the checkpoint")
         checkpoint.reset()
 
-    bm25 = _build_bm25(
-        settings,
-    )
+    bm25 = _build_bm25(settings)
 
     with QdrantLocalStore(
         path=settings.vector_store_path,
@@ -275,16 +257,10 @@ def ingest(
         use_case = IngestDocumentsUseCase(
             settings=settings,
             extractors=[
-                MinerUExtractor(
-                    settings=settings,
-                ),
+                MinerUExtractor(settings=settings),
             ],
-            chunker=_build_chunker(
-                settings,
-            ),
-            embedder=_build_embedder(
-                settings,
-            ),
+            chunker=_build_chunker(settings),
+            embedder=_build_embedder(settings),
             vector_store=vector_store,
             bm25_index=bm25,
             checkpoint=checkpoint,
@@ -292,28 +268,21 @@ def ingest(
 
         stats = use_case.run()
 
-    _print_ingest_stats(
-        stats,
-    )
+    _print_ingest_stats(stats)
 
 
 @app.command()
 def ask(
     question: Annotated[
         str,
-        typer.Argument(
-            help="The question to ask.",
-        ),
+        typer.Argument(help="The question to ask."),
     ],
     top_k: Annotated[
         int | None,
         typer.Option(
             "--top-k",
             "-k",
-            help=(
-                "Number of chunks to keep after fusion "
-                "(default: MAX_CHUNKS)."
-            ),
+            help="Number of chunks to keep after retrieval (default: MAX_CHUNKS).",
             min=1,
         ),
     ] = None,
@@ -321,16 +290,11 @@ def ask(
         bool,
         typer.Option(
             "--no-images",
-            help=(
-                "Never attach images, even if the "
-                "query mentions a figure."
-            ),
+            help="Never attach images, even if the query mentions a figure.",
         ),
     ] = False,
 ) -> None:
-    """
-    Ask a question using hybrid retrieval and the local LLM.
-    """
+    """Ask a question using hybrid retrieval, optional reranking and the local LLM."""
 
     settings = _build_settings()
 
@@ -346,9 +310,7 @@ def ask(
         top_k=top_k,
     )
 
-    bm25 = _build_bm25(
-        settings,
-    )
+    bm25 = _build_bm25(settings)
 
     with QdrantLocalStore(
         path=settings.vector_store_path,
@@ -356,26 +318,17 @@ def ask(
     ) as vector_store:
         use_case = AnswerQueryUseCase(
             settings=settings,
-            embedder=_build_embedder(
-                settings,
-            ),
+            embedder=_build_embedder(settings),
             vector_store=vector_store,
             bm25_index=bm25,
-            image_resolver=_build_image_resolver(
-                settings,
-            ),
-            llm=OllamaLLM(
-                settings,
-            ),
+            image_resolver=_build_image_resolver(settings),
+            llm=OllamaLLM(settings),
+            reranker=_build_reranker(settings),
         )
 
-        answer = use_case.run(
-            query,
-        )
+        answer = use_case.run(query)
 
-    _print_answer(
-        answer,
-    )
+    _print_answer(answer)
 
 
 @app.command()
@@ -403,10 +356,7 @@ def images(
     """
 
     settings = _build_settings()
-
-    bm25 = _build_bm25(
-        settings,
-    )
+    bm25 = _build_bm25(settings)
 
     with QdrantLocalStore(
         path=settings.vector_store_path,
@@ -414,24 +364,15 @@ def images(
     ) as vector_store:
         use_case = RetrieveImagesUseCase(
             settings=settings,
-            embedder=_build_embedder(
-                settings,
-            ),
+            embedder=_build_embedder(settings),
             vector_store=vector_store,
             bm25_index=bm25,
-            image_resolver=_build_image_resolver(
-                settings,
-            ),
+            image_resolver=_build_image_resolver(settings),
         )
 
-        found = use_case.run(
-            query_text,
-            top_k=top_k,
-        )
+        found = use_case.run(query_text, top_k=top_k)
 
-    _print_images(
-        found,
-    )
+    _print_images(found)
 
 
 @app.command()
@@ -449,36 +390,18 @@ def stats() -> None:
     ) as vector_store:
         vector_count = vector_store.count()
 
-    bm25 = _build_bm25(
-        settings,
-    )
-
+    bm25 = _build_bm25(settings)
     bm25_count = bm25.count()
 
-    checkpoint = _build_checkpoint(
-        settings,
-    )
-
+    checkpoint = _build_checkpoint(settings)
     checkpoint_count = checkpoint.count()
 
-    typer.echo(
-        "PaperLens storage"
-    )
-    typer.echo(
-        f"  vector store : {vector_count} chunk(s)"
-    )
-    typer.echo(
-        f"  BM25 index   : {bm25_count} chunk(s)"
-    )
-    typer.echo(
-        f"  checkpoint   : {checkpoint_count} chunk(s)"
-    )
-    typer.echo(
-        f"  data dir     : {settings.data_dir}"
-    )
-    typer.echo(
-        f"  storage dir  : {settings.storage_dir}"
-    )
+    typer.echo("PaperLens storage")
+    typer.echo(f"  vector store : {vector_count} chunk(s)")
+    typer.echo(f"  BM25 index   : {bm25_count} chunk(s)")
+    typer.echo(f"  checkpoint   : {checkpoint_count} chunk(s)")
+    typer.echo(f"  data dir     : {settings.data_dir}")
+    typer.echo(f"  storage dir  : {settings.storage_dir}")
 
 
 # ----------------------------------------------------------------------
@@ -492,69 +415,41 @@ def _print_ingest_stats(
     """Print the ingestion summary."""
 
     typer.echo("")
-
-    typer.echo(
-        "Ingestion summary"
-    )
-
-    typer.echo(
-        f"  discovered : {stats.get('discovered', 0)}"
-    )
-
-    typer.echo(
-        f"  ingested   : {stats.get('ingested', 0)}"
-    )
-
-    typer.echo(
-        f"  failed     : {stats.get('failed', 0)}"
-    )
-
-    typer.echo(
-        f"  chunks     : {stats.get('chunks', 0)}"
-    )
+    typer.echo("Ingestion summary")
+    typer.echo(f"  discovered : {stats.get('discovered', 0)}")
+    typer.echo(f"  ingested   : {stats.get('ingested', 0)}")
+    typer.echo(f"  failed     : {stats.get('failed', 0)}")
+    typer.echo(f"  chunks     : {stats.get('chunks', 0)}")
 
 
 def _print_answer(
     answer: Answer,
 ) -> None:
-    """Print an answer and its attached images."""
+    """Print the answer and its attached images."""
 
     typer.echo("")
     typer.echo("=" * 70)
     typer.echo("ANSWER")
     typer.echo("=" * 70)
-
-    typer.echo(
-        answer.text
-    )
+    typer.echo(answer.text)
 
     if not answer.used_images:
         return
 
     typer.echo("")
-    typer.echo(
-        "Attached images"
-    )
+    typer.echo("Attached images")
 
     for image in answer.used_images:
-        caption = (
-            (image.caption or "")
-            .splitlines()[0][:80]
-        )
+        caption = (image.caption or "").splitlines()[0][:80]
 
         typer.echo(
             f"  - {image.image_id} "
             f"(p. {image.page_number})"
         )
-
-        typer.echo(
-            f"    {image.image_path}"
-        )
+        typer.echo(f"    {image.image_path}")
 
         if caption:
-            typer.echo(
-                f"    {caption}"
-            )
+            typer.echo(f"    {caption}")
 
 
 def _print_images(
@@ -563,21 +458,14 @@ def _print_images(
     """Print retrieved images."""
 
     if not images:
-        typer.echo(
-            "No image found."
-        )
+        typer.echo("No image found.")
         return
 
-    typer.echo(
-        f"{len(images)} image(s):"
-    )
+    typer.echo(f"{len(images)} image(s):")
 
     for image in images:
         typer.echo(
             f"  - {image.image_id} "
             f"(p. {image.page_number})"
         )
-
-        typer.echo(
-            f"    {image.image_path}"
-        )
+        typer.echo(f"    {image.image_path}")

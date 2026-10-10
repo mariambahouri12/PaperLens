@@ -50,6 +50,9 @@ from app.domain.repositories.image_resolver import ImageResolverPort
 from app.domain.repositories.llm import LLMPort
 from app.domain.repositories.vector_store import VectorStorePort
 from app.domain.value_objects.ids import ImageId
+from app.domain.repositories.reranker import RerankerPort
+from app.infrastructure.logging.structured_logger import QueryTrace
+
 
 logger = logging.getLogger("paperlens.application.answer")
 
@@ -112,6 +115,7 @@ class AnswerQueryUseCase:
         bm25_index: BM25IndexPort,
         image_resolver: ImageResolverPort,
         llm: LLMPort,
+        reranker: RerankerPort | None = None,
     ) -> None:
         self.settings = settings
 
@@ -120,6 +124,10 @@ class AnswerQueryUseCase:
             vector_store=vector_store,
             bm25_index=bm25_index,
             rrf_k=settings.rrf_k,
+            use_bm25=settings.use_bm25,
+            use_dense=settings.use_dense,
+            use_rrf=settings.use_rrf,
+            reranker_candidate_k=settings.reranker_candidate_k,
         )
 
         self.image_resolver = image_resolver
@@ -130,24 +138,28 @@ class AnswerQueryUseCase:
         self,
         query: Query,
     ) -> Answer:
+        trace = QueryTrace(logger, query.text)
+
         candidate_k = self._candidate_k(
             query.top_k
         )
 
-        fused = self.retriever.retrieve(
-            query=query.text,
-            top_k=candidate_k,
-        )
+        with trace.stage("retrieval"):
+            fused = self.retriever.retrieve(
+                query=query.text,
+                top_k=candidate_k,
+            )
 
         token_counts = self._token_counts(fused)
 
-        kept = filter_chunks(
-            fused,
-            token_counts=token_counts,
-            min_relevance_score=self.settings.min_relevance_score,
-            max_chunks=self.settings.max_chunks,
-            max_context_tokens=self.settings.max_context_tokens,
-        )
+        with trace.stage("filtering"):
+            kept = filter_chunks(
+                fused,
+                token_counts=token_counts,
+                min_relevance_score=self.settings.min_relevance_score,
+                max_chunks=self.settings.max_chunks,
+                max_context_tokens=self.settings.max_context_tokens,
+            )
 
         chunks = [
             self.chunk_mapper.to_chunk(
@@ -156,6 +168,12 @@ class AnswerQueryUseCase:
             )
             for chunk_id, _, payload in kept
         ]
+
+        trace.log_chunks(
+            chunks,
+            scores=[score for _, score, _ in kept],
+            candidates=len(fused),
+        )
 
         context_str = (
             build_context(chunks)
@@ -169,34 +187,46 @@ class AnswerQueryUseCase:
             "Answer:"
         )
 
-        raw_answer = self._generate_answer(
-            user_prompt
-        )
+        with trace.stage("llm", resources=True):
+            raw_answer = self._generate_answer(
+                user_prompt
+            )
+
+        trace.log_llm(getattr(self.llm, "last_stats", None))
 
         # Replace [S#] markers by natural verified sources and keep
         # only the chunks that were really cited.
-        answer_text, cited_chunks = apply_citations(
+        with trace.stage("citations"):
+            answer_text, cited_chunks = apply_citations(
+                raw_answer,
+                chunks,
+            )
+
+            context = RetrievedContext(
+                chunks=cited_chunks,
+                total_tokens=sum(
+                    chunk.token_count
+                    for chunk in cited_chunks
+                ),
+            )
+
+            referenced_images = self._resolve_images(
+                cited_chunks
+            )
+            context.images = referenced_images
+
+            attached_images = self._select_attached_images(
+                query.intent,
+                referenced_images,
+            )
+
+        trace.log_citations(
             raw_answer,
+            answer_text,
             chunks,
+            cited_chunks,
         )
-
-        context = RetrievedContext(
-            chunks=cited_chunks,
-            total_tokens=sum(
-                chunk.token_count
-                for chunk in cited_chunks
-            ),
-        )
-
-        referenced_images = self._resolve_images(
-            cited_chunks
-        )
-        context.images = referenced_images
-
-        attached_images = self._select_attached_images(
-            query.intent,
-            referenced_images,
-        )
+        trace.finish()
 
         return Answer(
             text=answer_text,
